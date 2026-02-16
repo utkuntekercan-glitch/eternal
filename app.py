@@ -278,8 +278,9 @@ st.markdown("<h1 style='text-align:center;'>Eternal Fire</h1>", unsafe_allow_htm
 if "_sales_conn" not in st.session_state:
     st.session_state["_sales_conn"] = get_conn()
 conn = st.session_state["_sales_conn"]
+# Always ensure schema exists (safe/idempotent) to avoid missing-table errors after deploys.
+init_db(conn)
 if "_sales_bootstrap" not in st.session_state:
-    init_db(conn)
     sync_products_from_sales(conn)
     st.session_state["_sales_bootstrap"] = True
 
