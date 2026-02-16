@@ -105,8 +105,8 @@ def df_query(conn: DBConn, q: str, params=()):
 
 
 def tr_money(x: float) -> str:
-    s = format(float(x), ",.2f").replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"TL {s}"
+    s = format(float(x), ",.0f").replace(",", ".")
+    return f"₺{s}"
 
 
 def normalize_num(x) -> float:
