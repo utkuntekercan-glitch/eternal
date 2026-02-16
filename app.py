@@ -277,7 +277,12 @@ with tab2:
             },
             inplace=True,
         )
-        st.dataframe(by_product, use_container_width=True, hide_index=True)
+        by_product_display = by_product.copy()
+        by_product_display["Adet"] = by_product_display["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
+        by_product_display["Ciro"] = by_product_display["Ciro"].map(tr_money)
+        by_product_display["Maliyet"] = by_product_display["Maliyet"].map(tr_money)
+        by_product_display["Kar"] = by_product_display["Kar"].map(tr_money)
+        st.dataframe(by_product_display, use_container_width=True, hide_index=True)
 
 with tab3:
     st.subheader("Urun Maliyet Girisi")
