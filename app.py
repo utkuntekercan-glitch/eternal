@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from openpyxl import load_workbook
 
 try:
     import psycopg2
@@ -148,23 +149,25 @@ def normalize_num(x) -> float:
 
 
 def parse_uploaded_excel(file_bytes: bytes, week_label: str) -> pd.DataFrame:
-    # User mapping:
-    # S -> product_name (index 18)
-    # Y -> sku (index 24)
-    # R -> qty (index 17)
-    # U -> unit_price (index 20)
-    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl")
-    if len(df.columns) < 25:
-        raise ValueError("Excel beklenen kadar sutun icermiyor. En az Y sutununa kadar olmali.")
+    # Read with fixed Excel letters to avoid index-shift issues across exports.
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    ws = wb.active
 
-    out = pd.DataFrame(
-        {
-            "product_name": df.iloc[:, 18].astype(str).str.strip(),
-            "sku": df.iloc[:, 24].astype(str).str.strip(),
-            "qty": df.iloc[:, 17].apply(normalize_num),
-            "unit_price": df.iloc[:, 20].apply(normalize_num),
-        }
-    )
+    rows = []
+    for r in ws.iter_rows(min_row=2):
+        qty = normalize_num(r[17].value)   # R
+        name = "" if r[18].value is None else str(r[18].value).strip()  # S
+        price = normalize_num(r[20].value)  # U
+        sku = "" if r[24].value is None else str(r[24].value).strip()   # Y
+        rows.append(
+            {
+                "product_name": name,
+                "sku": sku,
+                "qty": qty,
+                "unit_price": price,
+            }
+        )
+    out = pd.DataFrame(rows)
     out["week_label"] = week_label
     out["order_date"] = None
     out["revenue"] = out["qty"] * out["unit_price"]
