@@ -91,9 +91,22 @@ def init_db(conn: DBConn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS products (
+            sku TEXT PRIMARY KEY,
+            product_name TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'Genel',
+            unit_cost REAL NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_week ON sales(week_label)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_products_active ON products(active)")
     conn.commit()
 
 
@@ -160,11 +173,60 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str) -> pd.DataFrame:
     return out
 
 
-def upsert_costs(conn: DBConn, df: pd.DataFrame):
+def sync_products_from_sales(conn: DBConn):
+    now = datetime.now().isoformat(timespec="seconds")
+    rows = df_query(
+        conn,
+        """
+        SELECT sku, MAX(product_name) AS product_name
+        FROM sales
+        GROUP BY sku
+        """,
+    )
+    if rows.empty:
+        return
+    payload = [(r["sku"], r["product_name"], now) for _, r in rows.iterrows()]
+    conn.executemany(
+        """
+        INSERT INTO products(sku, product_name, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(sku) DO UPDATE SET
+            product_name=excluded.product_name,
+            updated_at=excluded.updated_at
+        """,
+        payload,
+    )
+    conn.commit()
+
+
+def upsert_product_master(conn: DBConn, df: pd.DataFrame):
     now = datetime.now().isoformat(timespec="seconds")
     rows = []
     for _, r in df.iterrows():
-        rows.append((r["sku"], r["product_name"], float(r["unit_cost"]), now))
+        rows.append(
+            (
+                r["sku"],
+                r["product_name"],
+                str(r.get("category", "Genel") or "Genel"),
+                float(r["unit_cost"]),
+                1 if bool(r.get("active", True)) else 0,
+                now,
+            )
+        )
+    conn.executemany(
+        """
+        INSERT INTO products(sku, product_name, category, unit_cost, active, updated_at)
+        VALUES(?,?,?,?,?,?)
+        ON CONFLICT(sku) DO UPDATE SET
+            product_name=excluded.product_name,
+            category=excluded.category,
+            unit_cost=excluded.unit_cost,
+            active=excluded.active,
+            updated_at=excluded.updated_at
+        """,
+        rows,
+    )
+    # Keep legacy costs table aligned.
     conn.executemany(
         """
         INSERT INTO costs(sku, product_name, unit_cost, updated_at)
@@ -174,7 +236,7 @@ def upsert_costs(conn: DBConn, df: pd.DataFrame):
             unit_cost=excluded.unit_cost,
             updated_at=excluded.updated_at
         """,
-        rows,
+        [(r[0], r[1], r[3], r[5]) for r in rows],
     )
     conn.commit()
 
@@ -199,11 +261,15 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     if sales.empty:
         return sales
 
-    costs = df_query(conn, "SELECT sku, unit_cost FROM costs")
-    merged = sales.merge(costs, on="sku", how="left")
+    products = df_query(conn, "SELECT sku, category, unit_cost, active FROM products")
+    merged = sales.merge(products, on="sku", how="left")
+    merged["category"] = merged["category"].fillna("Genel")
+    merged["active"] = merged["active"].fillna(1)
     merged["unit_cost"] = merged["unit_cost"].fillna(0.0)
     merged["cost_total"] = merged["qty"] * merged["unit_cost"]
     merged["profit"] = merged["revenue"] - merged["cost_total"]
+    merged["margin_pct"] = merged["profit"] / merged["revenue"].replace(0, pd.NA) * 100
+    merged["margin_pct"] = merged["margin_pct"].fillna(0.0)
     return merged
 
 
@@ -214,9 +280,52 @@ if "_sales_conn" not in st.session_state:
 conn = st.session_state["_sales_conn"]
 if "_sales_bootstrap" not in st.session_state:
     init_db(conn)
+    sync_products_from_sales(conn)
     st.session_state["_sales_bootstrap"] = True
 
-tab1, tab2, tab3 = st.tabs(["Excel Yukle", "Aylik Rapor", "Maliyet Girisi"])
+tab0, tab1, tab2, tab3 = st.tabs(["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"])
+
+with tab0:
+    st.subheader("Genel Satis Ozeti")
+    dash_ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
+    dash = load_month_data(conn, dash_ym.strip())
+    if dash.empty:
+        st.info("Bu ay icin veri yok.")
+    else:
+        d_qty = float(dash["qty"].sum())
+        d_rev = float(dash["revenue"].sum())
+        d_cost = float(dash["cost_total"].sum())
+        d_profit = float(dash["profit"].sum())
+        d_margin = (d_profit / d_rev * 100.0) if d_rev > 0 else 0.0
+
+        a, b, c, d, e = st.columns(5)
+        a.metric("Toplam Adet", f"{d_qty:,.0f}".replace(",", "."))
+        b.metric("Toplam Ciro", tr_money(d_rev))
+        c.metric("Toplam Maliyet", tr_money(d_cost))
+        d.metric("Net Kar", tr_money(d_profit))
+        e.metric("Kar Marji", f"%{d_margin:.1f}")
+
+        st.markdown("#### En Cok Satan Urunler (Adet)")
+        by_qty = (
+            dash.groupby(["sku", "product_name"], as_index=False)["qty"]
+            .sum()
+            .sort_values("qty", ascending=False)
+            .head(10)
+        )
+        by_qty.rename(columns={"sku": "Stok Kodu", "product_name": "Urun", "qty": "Adet"}, inplace=True)
+        by_qty["Adet"] = by_qty["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
+        st.dataframe(by_qty, use_container_width=True, hide_index=True)
+
+        st.markdown("#### Kategori Bazli Ciro / Kar")
+        by_cat = (
+            dash.groupby("category", as_index=False)[["revenue", "profit"]]
+            .sum()
+            .sort_values("revenue", ascending=False)
+        )
+        by_cat.rename(columns={"category": "Kategori", "revenue": "Ciro", "profit": "Kar"}, inplace=True)
+        by_cat["Ciro"] = by_cat["Ciro"].map(tr_money)
+        by_cat["Kar"] = by_cat["Kar"].map(tr_money)
+        st.dataframe(by_cat, use_container_width=True, hide_index=True)
 
 with tab1:
     st.subheader("Haftalik Excel Yukleme")
@@ -276,6 +385,7 @@ with tab1:
             rows,
         )
         conn.commit()
+        sync_products_from_sales(conn)
         st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi.")
 
 with tab2:
@@ -320,22 +430,22 @@ with tab2:
         st.dataframe(by_product_display, use_container_width=True, hide_index=True)
 
 with tab3:
-    st.subheader("Urun Maliyet Girisi")
+    st.subheader("Urun Master (Kategori + Maliyet + Aktif)")
     products = df_query(
         conn,
         """
-        SELECT sku, MAX(product_name) AS product_name
-        FROM sales
-        GROUP BY sku
+        SELECT sku, product_name, category, unit_cost, active
+        FROM products
         ORDER BY product_name
         """,
     )
     if products.empty:
         st.info("Once Excel yukleyin.")
     else:
-        current_costs = df_query(conn, "SELECT sku, unit_cost FROM costs")
-        editor_df = products.merge(current_costs, on="sku", how="left")
+        editor_df = products.copy()
         editor_df["unit_cost"] = editor_df["unit_cost"].fillna(0.0)
+        editor_df["category"] = editor_df["category"].fillna("Genel")
+        editor_df["active"] = editor_df["active"].fillna(1).astype(int).map(lambda x: True if x == 1 else False)
         edited = st.data_editor(
             editor_df,
             use_container_width=True,
@@ -343,10 +453,12 @@ with tab3:
             column_config={
                 "sku": st.column_config.TextColumn("Stok Kodu", disabled=True),
                 "product_name": st.column_config.TextColumn("Urun", disabled=True),
+                "category": st.column_config.TextColumn("Kategori"),
                 "unit_cost": st.column_config.NumberColumn("Birim Maliyet", min_value=0.0, step=0.01),
+                "active": st.column_config.CheckboxColumn("Aktif"),
             },
             num_rows="fixed",
         )
-        if st.button("Maliyetleri Kaydet", type="primary"):
-            upsert_costs(conn, edited[["sku", "product_name", "unit_cost"]])
-            st.success("Maliyetler kaydedildi.")
+        if st.button("Urun Master Kaydet", type="primary"):
+            upsert_product_master(conn, edited[["sku", "product_name", "category", "unit_cost", "active"]])
+            st.success("Urun master kaydedildi.")
