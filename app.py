@@ -220,6 +220,27 @@ tab1, tab2, tab3 = st.tabs(["Excel Yukle", "Aylik Rapor", "Maliyet Girisi"])
 
 with tab1:
     st.subheader("Haftalik Excel Yukleme")
+    last_upload = df_query(
+        conn,
+        """
+        SELECT week_label, source_file, COUNT(*) AS row_count
+        FROM sales
+        GROUP BY week_label, source_file
+        ORDER BY MAX(id) DESC
+        LIMIT 1
+        """,
+    )
+    if not last_upload.empty:
+        last_week = str(last_upload.iloc[0]["week_label"])
+        last_file = str(last_upload.iloc[0]["source_file"])
+        last_rows = int(last_upload.iloc[0]["row_count"])
+        st.caption(f"Son yukleme: {last_week} | {last_file} | {last_rows} satir")
+        if st.button("Son yuklemeyi sil", type="secondary"):
+            conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
+            conn.commit()
+            st.success(f"{last_week} haftasi verileri silindi.")
+            st.rerun()
+
     week_label = st.text_input("Hafta etiketi (ornek: 2026-W07)")
     fallback_date = st.date_input("Bu dosya hangi aya yazilsin? (ornek: 2026-02 icin 2026-02-01 sec)", value=datetime.today())
     uploaded = st.file_uploader("Excel sec", type=["xlsx"])
