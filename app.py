@@ -333,25 +333,33 @@ with tab0:
 
 with tab1:
     st.subheader("Haftalik Excel Yukleme")
-    last_upload = df_query(
+    uploads = df_query(
         conn,
         """
-        SELECT week_label, source_file, COUNT(*) AS row_count
+        SELECT week_label, source_file, COUNT(*) AS row_count, MAX(id) AS max_id
         FROM sales
         GROUP BY week_label, source_file
-        ORDER BY MAX(id) DESC
-        LIMIT 1
+        ORDER BY max_id DESC
         """,
     )
-    if not last_upload.empty:
-        last_week = str(last_upload.iloc[0]["week_label"])
-        last_file = str(last_upload.iloc[0]["source_file"])
-        last_rows = int(last_upload.iloc[0]["row_count"])
+    if not uploads.empty:
+        last_week = str(uploads.iloc[0]["week_label"])
+        last_file = str(uploads.iloc[0]["source_file"])
+        last_rows = int(uploads.iloc[0]["row_count"])
         st.caption(f"Son yukleme: {last_week} | {last_file} | {last_rows} satir")
         if st.button("Son yuklemeyi sil", type="secondary"):
             conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
             conn.commit()
+            sync_products_from_sales(conn)
             st.success(f"{last_week} haftasi verileri silindi.")
+            st.rerun()
+        week_opts = sorted(uploads["week_label"].astype(str).unique().tolist(), reverse=True)
+        sel_week = st.selectbox("Silmek icin hafta sec", week_opts, key="delete_week_select")
+        if st.button("Secili haftayi sil"):
+            conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
+            conn.commit()
+            sync_products_from_sales(conn)
+            st.success(f"{sel_week} haftasi verileri silindi.")
             st.rerun()
 
     week_label = st.text_input("Hafta etiketi (ornek: 2026-W07)")
@@ -432,6 +440,29 @@ with tab2:
         by_product_display["Maliyet"] = by_product_display["Maliyet"].map(tr_money)
         by_product_display["Kar"] = by_product_display["Kar"].map(tr_money)
         st.dataframe(by_product_display, use_container_width=True, hide_index=True)
+
+        st.markdown("#### SKU Detay Kontrol")
+        sku_options = sorted(report["sku"].astype(str).unique().tolist())
+        sku_sel = st.selectbox("Detay SKU sec", sku_options, key="sku_detail_select")
+        sku_rows = report[report["sku"].astype(str) == sku_sel].copy()
+        if not sku_rows.empty:
+            sku_rows = sku_rows[["week_label", "order_date", "sku", "product_name", "qty", "unit_price", "revenue"]]
+            sku_rows.rename(
+                columns={
+                    "week_label": "Hafta",
+                    "order_date": "Tarih",
+                    "sku": "Stok Kodu",
+                    "product_name": "Urun",
+                    "qty": "Adet",
+                    "unit_price": "Birim Fiyat",
+                    "revenue": "Ciro",
+                },
+                inplace=True,
+            )
+            sku_rows["Adet"] = sku_rows["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
+            sku_rows["Birim Fiyat"] = sku_rows["Birim Fiyat"].map(tr_money)
+            sku_rows["Ciro"] = sku_rows["Ciro"].map(tr_money)
+            st.dataframe(sku_rows, use_container_width=True, hide_index=True)
 
 with tab3:
     st.subheader("Urun Master (Kategori + Maliyet + Aktif)")
