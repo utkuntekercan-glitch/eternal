@@ -112,8 +112,22 @@ def tr_money(x: float) -> str:
 def normalize_num(x) -> float:
     if pd.isna(x):
         return 0.0
+    # If Excel already parsed as numeric, keep it as-is.
+    if isinstance(x, (int, float)):
+        return float(x)
     s = str(x).strip().replace("TL", "").replace("tl", "")
-    s = s.replace(".", "").replace(",", ".")
+    # Handle both TR and EN formatted strings safely.
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        parts = s.split(".")
+        if len(parts) > 1 and all(len(p) == 3 for p in parts[1:]):
+            s = "".join(parts)
     try:
         return float(s)
     except Exception:
