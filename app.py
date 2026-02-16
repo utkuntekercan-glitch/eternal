@@ -193,7 +193,7 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     return merged
 
 
-st.title("Oldschool Espor Satis Raporlari")
+st.markdown("<h1 style='text-align:center;'>Eternal Fire</h1>", unsafe_allow_html=True)
 
 if "_sales_conn" not in st.session_state:
     st.session_state["_sales_conn"] = get_conn()
