@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import io
 import os
 import re
@@ -358,7 +358,7 @@ def df_query(conn: DBConn, q: str, params=()):
 
 
 def tr_money(x: float) -> str:
-    return f"₺{format(float(x), ',.0f').replace(',', '.')}"
+    return f"â‚º{format(float(x), ',.0f').replace(',', '.')}"
 
 
 def normalize_num(x) -> float:
@@ -411,7 +411,7 @@ def normalize_excel_date(value, fallback_iso: str) -> str:
 
 
 def normalize_header_text(s: str) -> str:
-    tr_map = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+    tr_map = str.maketrans("Ã§ÄŸÄ±Ã¶ÅŸÃ¼Ã‡ÄÄ°Ã–ÅÃœ", "cgiosuCGIOSU")
     return str(s or "").translate(tr_map).strip().lower()
 
 
@@ -423,7 +423,8 @@ def normalize_text_safe(s: str) -> str:
     except Exception:
         pass
     txt = txt.replace("þ", "s").replace("ð", "g")
-    txt = txt.replace("ı", "i")
+    txt = txt.replace("Ã¾", "s").replace("Ã°", "g")
+    txt = txt.replace("ı", "i").replace("Ä±", "i")
     txt = unicodedata.normalize("NFKD", txt)
     txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
     return txt
@@ -461,7 +462,7 @@ def build_order_item_key(
 
 
 def is_paid_status(v) -> bool:
-    t = normalize_text_safe(v).replace("þ", "s").replace("ð", "g")
+    t = normalize_text_safe(v)
     t = " ".join(t.split())
     return ("odendi" in t) or ("iade edildi" in t)
 
@@ -474,7 +475,9 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     order_no_idx = find_order_no_col(ws)
     rows = []
     for excel_row_no, r in enumerate(ws.iter_rows(min_row=2), start=2):
-        if not is_paid_status(r[6].value):  # G
+        customer_email = "" if r[4].value is None else str(r[4].value).strip().lower()  # E
+        is_free_exit = 1 if customer_email == FREE_EXIT_EMAIL else 0
+        if (not is_paid_status(r[6].value)) and (is_free_exit == 0):  # G
             continue
         raw_order_no = r[order_no_idx].value if order_no_idx is not None and order_no_idx < len(r) else None
         if raw_order_no is None:
@@ -483,9 +486,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
             order_no = str(int(raw_order_no))
         else:
             order_no = str(raw_order_no).strip()
-        customer_email = "" if r[4].value is None else str(r[4].value).strip().lower()  # E
         order_date = normalize_excel_date(r[7].value, order_date_iso)  # H
-        is_free_exit = 1 if customer_email == FREE_EXIT_EMAIL else 0
         qty = normalize_num(r[17].value)  # R
         product_name = "" if r[18].value is None else str(r[18].value).strip()  # S
         unit_price = normalize_num(r[20].value)  # U
@@ -917,7 +918,7 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
     total_profit = total_rev - total_cost
 
     def money(v: float) -> str:
-        return f"₺{format(float(v), ',.2f').replace(',', '.')}"
+        return f"â‚º{format(float(v), ',.2f').replace(',', '.')}"
 
     out = io.BytesIO()
     pdf = canvas.Canvas(out, pagesize=A4)
@@ -934,13 +935,13 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
         pdf.setFont(font_bold, 17)
         pdf.drawString(margin, h - 34, "Eternal Fire")
         pdf.setFont(font_regular, 11)
-        pdf.drawString(margin, h - 52, "Aylık Satış ve Karlılık Raporu")
+        pdf.drawString(margin, h - 52, "AylÄ±k SatÄ±ÅŸ ve KarlÄ±lÄ±k Raporu")
         pdf.setFont(font_regular, 9)
-        pdf.drawRightString(w - margin, h - 36, f"Rapor Ayı: {ym}")
+        pdf.drawRightString(w - margin, h - 36, f"Rapor AyÄ±: {ym}")
         pdf.drawRightString(
             w - margin,
             h - 52,
-            f"Oluşturma: {datetime.now(ZoneInfo('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}",
+            f"OluÅŸturma: {datetime.now(ZoneInfo('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}",
         )
         pdf.drawRightString(w - margin, h - 68, f"Sayfa {page_no}")
 
@@ -987,7 +988,7 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
         pdf.setFillColor(colors.white)
         pdf.setFont(font_bold, 8.5)
         pdf.drawString(col_left["sku"] + 4, table_top - 12, "SKU")
-        pdf.drawString(col_left["urun"] + 4, table_top - 12, "Ürün")
+        pdf.drawString(col_left["urun"] + 4, table_top - 12, "ÃœrÃ¼n")
         pdf.drawRightString(col_right["adet"] - 4, table_top - 12, "Adet")
         pdf.drawRightString(col_right["ciro"] - 4, table_top - 12, "Ciro")
         pdf.drawRightString(col_right["maliyet"] - 4, table_top - 12, "Maliyet")
@@ -1001,7 +1002,7 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
     if prod_df.empty:
         pdf.setFillColor(colors.HexColor("#111827"))
         pdf.setFont(font_regular, 10)
-        pdf.drawString(margin, y - 4, "Bu ay için veri yok.")
+        pdf.drawString(margin, y - 4, "Bu ay iÃ§in veri yok.")
     else:
         for i, (_, r) in enumerate(prod_df.iterrows()):
             if y < 52:
@@ -1504,3 +1505,7 @@ else:
             upsert_product_costs(conn, cost_rows)
             st.cache_data.clear()
             st.success("Urun master kaydedildi.")
+
+
+
+
