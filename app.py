@@ -599,33 +599,25 @@ def render_brand_header():
         st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
 
 
+def get_ready_conn() -> DBConn:
+    if "_sales_conn" not in st.session_state:
+        st.session_state["_sales_conn"] = get_conn()
+    conn = st.session_state["_sales_conn"]
+    schema_key = f"{conn.driver}:v4"
+    if st.session_state.get("_sales_schema_ready") != schema_key:
+        init_db(conn)
+        st.session_state["_sales_schema_ready"] = schema_key
+    return conn
+
+
 inject_styles()
 render_brand_header()
-
-if "_sales_conn" not in st.session_state:
-    st.session_state["_sales_conn"] = get_conn()
-conn = st.session_state["_sales_conn"]
-# Ensure schema once per session to avoid repeating init work on every rerun.
-schema_key = f"{conn.driver}:v3"
-if st.session_state.get("_sales_schema_ready") != schema_key:
-    init_db(conn)
-    st.session_state["_sales_schema_ready"] = schema_key
-if "_sales_bootstrap" not in st.session_state:
-    pcount_df = df_query(conn, "SELECT COUNT(*) AS n FROM products")
-    pcount = int(pcount_df.iloc[0]["n"]) if not pcount_df.empty else 0
-    if pcount == 0:
-        sync_products_from_sales(conn)
-    summary_count_df = df_query(conn, "SELECT COUNT(*) AS n FROM sales_monthly_sku")
-    summary_count = int(summary_count_df.iloc[0]["n"]) if not summary_count_df.empty else 0
-    if summary_count == 0:
-        refresh_monthly_summary(conn)
-        st.cache_data.clear()
-    st.session_state["_sales_bootstrap"] = True
 
 sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
 if section == "Genel Dashboard":
+    conn = get_ready_conn()
     st.subheader("Genel Satis Ozeti")
     dash_ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
     if "_dash_loaded" not in st.session_state:
@@ -647,7 +639,14 @@ if section == "Genel Dashboard":
 
     metrics = get_dashboard_metrics(conn, dash_ym.strip())
     if metrics.empty or float(metrics.iloc[0]["total_revenue"] or 0) <= 0:
-        st.info("Bu ay icin veri yok.")
+        st.info("Bu ay icin ozet veri yok.")
+        if st.button("Aylik ozeti olustur/yenile", type="secondary"):
+            with st.spinner("Ozet hazirlaniyor..."):
+                sync_products_from_sales(conn)
+                refresh_monthly_summary(conn)
+                st.cache_data.clear()
+            st.success("Aylik ozet yenilendi.")
+            st.rerun()
     else:
         d_qty = float(metrics.iloc[0]["total_qty"] or 0)
         d_rev = float(metrics.iloc[0]["total_revenue"] or 0)
@@ -674,6 +673,7 @@ if section == "Genel Dashboard":
         st.dataframe(by_cat, use_container_width=True, hide_index=True)
 
 elif section == "Excel Yukle":
+    conn = get_ready_conn()
     st.subheader("Haftalik Excel Yukleme")
     uploads = get_uploads_cached(conn)
     if not uploads.empty:
@@ -744,6 +744,7 @@ elif section == "Excel Yukle":
         st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
 
 elif section == "Aylik Rapor":
+    conn = get_ready_conn()
     st.subheader("Aylik Satis / Ciro / Kar")
     ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"))
     report = load_month_data(conn, ym.strip())
@@ -830,6 +831,7 @@ elif section == "Aylik Rapor":
         st.dataframe(free_disp, use_container_width=True, hide_index=True)
 
 else:
+    conn = get_ready_conn()
     st.subheader("Urun Master (Kategori + Maliyet + Aktif)")
     products = get_products_cached(conn)
     if products.empty:
