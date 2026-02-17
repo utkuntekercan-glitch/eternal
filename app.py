@@ -505,7 +505,7 @@ with top_c2:
         st.session_state["authenticated"] = False
         st.rerun()
 
-sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
+sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urunler"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
 if section == "Genel Dashboard":
@@ -700,7 +700,7 @@ elif section == "Aylik Rapor":
 
 else:
     conn = get_ready_conn()
-    st.subheader("Urun Master")
+    st.subheader("Urunler")
     products = get_products_master(conn)
     if products.empty:
         st.info("Once Excel yukleyin.")
