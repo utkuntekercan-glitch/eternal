@@ -719,8 +719,6 @@ if section == "Genel Dashboard":
 
 elif section == "Veri Ekle":
     conn = get_ready_conn()
-    st.info("Excel sadece ice aktarma icin kullanilir. Dosyayi bilgisayardan silseniz bile veriler veritabaninda kalir.")
-
     if st.button("Tum aylik ozetleri yeniden olustur", type="secondary"):
         with st.spinner("Tum ozetler hazirlaniyor..."):
             refresh_monthly_summary_all(conn)
