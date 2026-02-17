@@ -14,7 +14,7 @@ try:
 except Exception:
     psycopg2 = None
 
-st.set_page_config(page_title="Oldschool Espor Satis Rapor", layout="wide")
+st.set_page_config(page_title="Eternal Fire", layout="wide")
 
 DB_PATH = Path("sales_reports.db")
 DATABASE_URL = str(st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", ""))).strip()
