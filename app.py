@@ -735,6 +735,20 @@ def get_dashboard_date_range(_conn: DBConn) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_available_months(_conn: DBConn, free_only: int = 0) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
+        FROM sales
+        WHERE COALESCE(is_free_exit, 0) = ?
+        ORDER BY ym DESC
+        """,
+        (int(free_only),),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_top_products(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -1424,15 +1438,7 @@ elif section == "Veri Ekle":
 
 elif section == "Aylik Rapor":
     conn = get_ready_conn()
-    month_options_df = df_query(
-        conn,
-        """
-        SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
-        FROM sales
-        WHERE COALESCE(is_free_exit, 0) = 0
-        ORDER BY ym DESC
-        """,
-    )
+    month_options_df = get_available_months(conn, free_only=0)
     month_options = month_options_df["ym"].dropna().astype(str).tolist() if not month_options_df.empty else []
     if not month_options:
         month_options = [datetime.today().strftime("%Y-%m")]
@@ -1473,10 +1479,12 @@ elif section == "Aylik Rapor":
 
 elif section == "Bedelsiz Cikislar":
     conn = get_ready_conn()
-    ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="free_ym")
-    if not is_valid_ym(ym):
-        st.warning("Ay formati gecersiz. Ornek: 2026-02")
+    free_months_df = get_available_months(conn, free_only=1)
+    free_months = free_months_df["ym"].dropna().astype(str).tolist() if not free_months_df.empty else []
+    if not free_months:
+        st.info("Bedelsiz satis verisi yok.")
         st.stop()
+    ym = st.selectbox("Ay Sec", free_months, key="free_ym_select")
 
     free_df = get_free_exit_manage_rows(conn, ym.strip())
     if free_df.empty:
