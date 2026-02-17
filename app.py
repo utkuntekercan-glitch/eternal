@@ -1359,10 +1359,13 @@ elif section == "Veri Ekle":
 
 elif section == "Aylik Rapor":
     conn = get_ready_conn()
-    ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="month_ym")
-    if not is_valid_ym(ym):
-        st.warning("Ay formati gecersiz. Ornek: 2026-02")
-        st.stop()
+    month_date = st.date_input(
+        "Ay Sec",
+        value=datetime.today().date(),
+        key="month_pick_date",
+        format="DD.MM.YYYY",
+    )
+    ym = month_date.strftime("%Y-%m")
 
     prod_df = get_month_products(conn, ym.strip())
     totals_df = get_month_totals(conn, ym.strip())
