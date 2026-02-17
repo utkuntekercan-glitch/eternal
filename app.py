@@ -723,54 +723,43 @@ def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
         _conn,
         """
         SELECT
-            m.sku AS "Stok Kodu",
-            MAX(m.product_name) AS "Urun",
-            COALESCE(SUM(m.qty), 0) AS "Adet",
-            COALESCE(SUM(m.revenue), 0) AS "Ciro",
-            COALESCE(SUM(m.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS "Maliyet",
-            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar",
-            d.last_order_date AS "Son Satis Tarihi"
-        FROM sales_monthly_sku m
-        LEFT JOIN products p ON p.sku = m.sku
-        LEFT JOIN product_costs c ON c.sku = m.sku
-        LEFT JOIN (
-            SELECT sku, MAX(order_date) AS last_order_date
-            FROM sales
-            WHERE order_date >= ? AND order_date < ?
-              AND COALESCE(is_free_exit, 0) = 0
-            GROUP BY sku
-        ) d ON d.sku = m.sku
-        WHERE m.ym = ?
-        GROUP BY m.sku, d.last_order_date
+            s.sku AS "Stok Kodu",
+            MAX(s.product_name) AS "Urun",
+            COALESCE(SUM(s.qty), 0) AS "Adet",
+            COALESCE(SUM(s.revenue), 0) AS "Ciro",
+            COALESCE(SUM(s.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS "Maliyet",
+            COALESCE(SUM(s.revenue - (s.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar",
+            MAX(s.order_date) AS "Son Satis Tarihi"
+        FROM sales s
+        LEFT JOIN products p ON p.sku = s.sku
+        LEFT JOIN product_costs c ON c.sku = s.sku
+        WHERE s.order_date >= ? AND s.order_date < ?
+          AND COALESCE(s.is_free_exit, 0) = 0
+        GROUP BY s.sku
         ORDER BY "Ciro" DESC
         """,
-        (start, end, ym,),
+        (start, end),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
         SELECT
-            COALESCE(SUM("Adet"), 0) AS total_qty,
-            COALESCE(SUM("Ciro"), 0) AS total_revenue,
-            COALESCE(SUM("Maliyet"), 0) AS total_cost,
-            COALESCE(SUM("Kar"), 0) AS total_profit
-        FROM (
-            SELECT
-                COALESCE(SUM(m.qty), 0) AS "Adet",
-                COALESCE(SUM(m.revenue), 0) AS "Ciro",
-                COALESCE(SUM(m.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS "Maliyet",
-                COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar"
-            FROM sales_monthly_sku m
-            LEFT JOIN products p ON p.sku = m.sku
-            LEFT JOIN product_costs c ON c.sku = m.sku
-            WHERE m.ym = ?
-        ) x
+            COALESCE(SUM(s.qty), 0) AS total_qty,
+            COALESCE(SUM(s.revenue), 0) AS total_revenue,
+            COALESCE(SUM(s.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS total_cost,
+            COALESCE(SUM(s.revenue - (s.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS total_profit
+        FROM sales s
+        LEFT JOIN products p ON p.sku = s.sku
+        LEFT JOIN product_costs c ON c.sku = s.sku
+        WHERE s.order_date >= ? AND s.order_date < ?
+          AND COALESCE(s.is_free_exit, 0) = 0
         """,
-        (ym,),
+        (start, end),
     )
 
 
