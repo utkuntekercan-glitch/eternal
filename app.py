@@ -44,6 +44,9 @@ class DBConn:
     def commit(self):
         self._conn.commit()
 
+    def rollback(self):
+        self._conn.rollback()
+
     def close(self):
         self._conn.close()
 
@@ -88,11 +91,11 @@ def init_db(conn: DBConn):
     try:
         conn.execute("ALTER TABLE sales ADD COLUMN customer_email TEXT")
     except Exception:
-        pass
+        conn.rollback()
     try:
         conn.execute("ALTER TABLE sales ADD COLUMN is_free_exit INTEGER NOT NULL DEFAULT 0")
     except Exception:
-        pass
+        conn.rollback()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS costs (
