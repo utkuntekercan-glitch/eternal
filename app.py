@@ -294,6 +294,21 @@ def month_bounds(ym: str):
     return start, end
 
 
+def normalize_excel_date(value, fallback_iso: str) -> str:
+    if value is None:
+        return fallback_iso
+    try:
+        # openpyxl may return datetime/date objects directly.
+        if hasattr(value, "strftime"):
+            return value.strftime("%Y-%m-%d")
+        dt = pd.to_datetime(str(value), errors="coerce", dayfirst=True)
+        if pd.isna(dt):
+            return fallback_iso
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return fallback_iso
+
+
 def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
     from openpyxl import load_workbook
 
@@ -302,6 +317,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     rows = []
     for r in ws.iter_rows(min_row=2):
         customer_email = "" if r[4].value is None else str(r[4].value).strip().lower()  # E
+        order_date = normalize_excel_date(r[7].value, order_date_iso)  # H
         is_free_exit = 1 if customer_email == FREE_EXIT_EMAIL else 0
         qty = normalize_num(r[17].value)  # R
         product_name = "" if r[18].value is None else str(r[18].value).strip()  # S
@@ -311,7 +327,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
             rows.append(
                 {
                     "week_label": week_label,
-                    "order_date": order_date_iso,
+                    "order_date": order_date,
                     "customer_email": customer_email,
                     "is_free_exit": is_free_exit,
                     "sku": sku,
@@ -414,6 +430,20 @@ def get_uploads(_conn: DBConn) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_recent_sales(_conn: DBConn, limit_n: int = 300) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT id, order_date, week_label, sku, product_name, qty, revenue
+        FROM sales
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (int(limit_n),),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -469,6 +499,7 @@ def get_dashboard_categories(_conn: DBConn, ym: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -478,15 +509,23 @@ def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
             COALESCE(SUM(m.qty), 0) AS "Adet",
             COALESCE(SUM(m.revenue), 0) AS "Ciro",
             COALESCE(SUM(m.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS "Maliyet",
-            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar"
+            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar",
+            d.last_order_date AS "Son Satis Tarihi"
         FROM sales_monthly_sku m
         LEFT JOIN products p ON p.sku = m.sku
         LEFT JOIN product_costs c ON c.sku = m.sku
+        LEFT JOIN (
+            SELECT sku, MAX(order_date) AS last_order_date
+            FROM sales
+            WHERE order_date >= ? AND order_date < ?
+              AND COALESCE(is_free_exit, 0) = 0
+            GROUP BY sku
+        ) d ON d.sku = m.sku
         WHERE m.ym = ?
-        GROUP BY m.sku
+        GROUP BY m.sku, d.last_order_date
         ORDER BY "Ciro" DESC
         """,
-        (ym,),
+        (start, end, ym,),
     )
 
 
@@ -679,12 +718,60 @@ if section == "Genel Dashboard":
 
 elif section == "Excel Yukle":
     conn = get_ready_conn()
+    st.info("Excel sadece ice aktarma icin kullanilir. Dosyayi bilgisayardan silseniz bile veriler veritabaninda kalir.")
+
     if st.button("Tum aylik ozetleri yeniden olustur", type="secondary"):
         with st.spinner("Tum ozetler hazirlaniyor..."):
             refresh_monthly_summary_all(conn)
             st.cache_data.clear()
         st.success("Tum aylik ozetler yenilendi.")
         st.rerun()
+
+    st.markdown("#### Veri Yonetimi")
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        del_ym = st.text_input("Toplu silme ayi (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="del_ym")
+        if st.button("Secili Ayi Sil"):
+            if not is_valid_ym(del_ym):
+                st.warning("Ay formati gecersiz. Ornek: 2026-02")
+            else:
+                start, end = month_bounds(del_ym.strip())
+                conn.execute("DELETE FROM sales WHERE order_date >= ? AND order_date < ?", (start, end))
+                conn.commit()
+                refresh_monthly_summary_for_month(conn, del_ym.strip())
+                st.cache_data.clear()
+                st.success(f"{del_ym.strip()} ayi verileri silindi.")
+                st.rerun()
+    with m2:
+        recent_df = get_recent_sales(conn, 300)
+        if recent_df.empty:
+            st.caption("Tek satir silme icin veri yok.")
+        else:
+            recent_df["label"] = recent_df.apply(
+                lambda r: f"#{int(r['id'])} | {r['order_date']} | {r['sku']} | {float(r['qty']):,.0f} adet".replace(",", "."),
+                axis=1,
+            )
+            sel_label = st.selectbox("Tek satir sec", recent_df["label"].tolist(), key="single_delete_row")
+            sel_row = recent_df[recent_df["label"] == sel_label].iloc[0]
+            if st.button("Secili Satiri Sil"):
+                row_id = int(sel_row["id"])
+                ym = str(sel_row["order_date"])[:7]
+                conn.execute("DELETE FROM sales WHERE id=?", (row_id,))
+                conn.commit()
+                if is_valid_ym(ym):
+                    refresh_monthly_summary_for_month(conn, ym)
+                st.cache_data.clear()
+                st.success(f"Satir silindi: #{row_id}")
+                st.rerun()
+    with m3:
+        wipe_ok = st.checkbox("Tum veriyi silmeyi onayliyorum", key="wipe_all_confirm")
+        if st.button("Tum Verileri Sil", type="secondary", disabled=not wipe_ok):
+            conn.execute("DELETE FROM sales")
+            conn.execute("DELETE FROM sales_monthly_sku")
+            conn.commit()
+            st.cache_data.clear()
+            st.success("Tum satis verileri silindi.")
+            st.rerun()
 
     uploads = get_uploads(conn)
     if not uploads.empty:
@@ -764,7 +851,17 @@ elif section == "Excel Yukle":
                 )
                 conn.commit()
                 upsert_products_from_rows(conn, parsed[["sku", "product_name"]])
-                refresh_monthly_summary_for_month(conn, fallback_date.strftime("%Y-%m"))
+                months = (
+                    parsed["order_date"]
+                    .astype(str)
+                    .str.slice(0, 7)
+                    .dropna()
+                    .unique()
+                    .tolist()
+                )
+                for ym in months:
+                    if is_valid_ym(ym):
+                        refresh_monthly_summary_for_month(conn, ym)
                 st.cache_data.clear()
                 free_rows = int(parsed["is_free_exit"].sum())
                 st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
