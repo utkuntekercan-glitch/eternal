@@ -813,12 +813,17 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
 
 def render_header():
     now_txt = datetime.now(ZoneInfo("Europe/Istanbul")).strftime("%d.%m.%Y %H:%M")
-    c1, c2 = st.columns([5, 1])
-    with c1:
-        if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
-            st.image(APP_LOGO_URL, width=64)
-        st.title("Eternal Fire")
-        st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
+    if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
+        st.image(APP_LOGO_URL, width=64)
+    st.markdown(
+        "<h1 style='text-align:center; margin-bottom:0;'>Eternal Fire</h1>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align:center; margin-top:0; color:#aeb8cb;'>Satis Operasyon ve Karlilik Kontrol Paneli</p>",
+        unsafe_allow_html=True,
+    )
+    _, c2 = st.columns([5, 1])
     with c2:
         st.caption("Son Giris")
         st.code(now_txt)
