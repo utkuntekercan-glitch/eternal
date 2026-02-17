@@ -233,8 +233,6 @@ def init_db(conn: DBConn):
         conn.execute("ALTER TABLE sales ADD COLUMN is_free_exit INTEGER NOT NULL DEFAULT 0")
     except Exception:
         conn.rollback()
-    # Keep old rows index-friendly for direct equality filters.
-    conn.execute("UPDATE sales SET is_free_exit=0 WHERE is_free_exit IS NULL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS costs (
@@ -274,6 +272,7 @@ def init_db(conn: DBConn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_week ON sales(week_label)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_is_free_exit ON sales(is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_free ON sales(order_date, is_free_exit)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_free_expr ON sales(order_date, COALESCE(is_free_exit, 0))")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_monthly_ym ON sales_monthly_sku(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_active ON products(active)")
     conn.commit()
@@ -299,9 +298,31 @@ def refresh_monthly_summary(conn: DBConn):
             SUM(revenue) AS revenue
         FROM sales
         WHERE order_date IS NOT NULL
-          AND is_free_exit = 0
+          AND COALESCE(is_free_exit, 0) = 0
         GROUP BY SUBSTR(order_date, 1, 7), sku
         """
+    )
+    conn.commit()
+
+
+def refresh_monthly_summary_for_month(conn: DBConn, ym: str):
+    start, end = month_bounds(ym)
+    conn.execute("DELETE FROM sales_monthly_sku WHERE ym = ?", (ym,))
+    conn.execute(
+        """
+        INSERT INTO sales_monthly_sku(ym, sku, product_name, qty, revenue)
+        SELECT
+            SUBSTR(order_date, 1, 7) AS ym,
+            sku,
+            MAX(product_name) AS product_name,
+            SUM(qty) AS qty,
+            SUM(revenue) AS revenue
+        FROM sales
+        WHERE order_date >= ? AND order_date < ?
+          AND COALESCE(is_free_exit, 0) = 0
+        GROUP BY SUBSTR(order_date, 1, 7), sku
+        """,
+        (start, end),
     )
     conn.commit()
 
@@ -334,6 +355,13 @@ def get_products_cached(_conn: DBConn) -> pd.DataFrame:
 def tr_money(x: float) -> str:
     s = format(float(x), ",.0f").replace(",", ".")
     return f"₺{s}"
+
+
+def month_bounds(ym: str):
+    start = f"{ym}-01"
+    y, m = map(int, ym.split("-"))
+    end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
+    return start, end
 
 
 def normalize_num(x) -> float:
@@ -576,17 +604,83 @@ def get_dashboard_by_category(_conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def get_month_report_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
+    return df_query(
+        _conn,
+        """
+        SELECT
+            COALESCE(SUM(s.qty), 0) AS total_qty,
+            COALESCE(SUM(s.revenue), 0) AS total_revenue,
+            COALESCE(SUM(s.qty * COALESCE(p.unit_cost, 0)), 0) AS total_cost,
+            COALESCE(SUM(s.revenue - (s.qty * COALESCE(p.unit_cost, 0))), 0) AS total_profit
+        FROM sales s
+        LEFT JOIN products p ON p.sku = s.sku
+        WHERE s.order_date >= ? AND s.order_date < ?
+          AND COALESCE(s.is_free_exit, 0) = 0
+        """,
+        (start, end),
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_month_report_products(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
+    return df_query(
+        _conn,
+        """
+        SELECT
+            s.sku AS "Stok Kodu",
+            MAX(s.product_name) AS "Urun",
+            COALESCE(SUM(s.qty), 0) AS "Adet",
+            COALESCE(SUM(s.revenue), 0) AS "Ciro",
+            COALESCE(SUM(s.qty * COALESCE(p.unit_cost, 0)), 0) AS "Maliyet",
+            COALESCE(SUM(s.revenue - (s.qty * COALESCE(p.unit_cost, 0))), 0) AS "Kar"
+        FROM sales s
+        LEFT JOIN products p ON p.sku = s.sku
+        WHERE s.order_date >= ? AND s.order_date < ?
+          AND COALESCE(s.is_free_exit, 0) = 0
+        GROUP BY s.sku
+        ORDER BY "Ciro" DESC
+        """,
+        (start, end),
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_month_report_sku_details(_conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
+    return df_query(
+        _conn,
+        """
+        SELECT
+            week_label AS "Hafta",
+            order_date AS "Tarih",
+            sku AS "Stok Kodu",
+            product_name AS "Urun",
+            qty AS "Adet",
+            unit_price AS "Birim Fiyat",
+            revenue AS "Ciro"
+        FROM sales
+        WHERE order_date >= ? AND order_date < ?
+          AND COALESCE(is_free_exit, 0) = 0
+          AND sku = ?
+        ORDER BY order_date, week_label
+        """,
+        (start, end, sku),
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start = f"{ym}-01"
-    y, m = map(int, ym.split("-"))
-    end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
+    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
         SELECT week_label, order_date, customer_email, sku, product_name, qty, unit_price, revenue
         FROM sales
         WHERE order_date >= ? AND order_date < ?
-          AND is_free_exit = 1
+          AND COALESCE(is_free_exit, 0) = 1
         ORDER BY order_date, week_label
         """,
         (start, end),
@@ -617,10 +711,13 @@ def get_ready_conn() -> DBConn:
 inject_styles()
 render_brand_header()
 
-sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
+sections = ["Ana Sayfa", "Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
-if section == "Genel Dashboard":
+if section == "Ana Sayfa":
+    st.info("Hizli acilis modu aktif. Islem yapmak icin yukaridan bir bolum sec.")
+
+elif section == "Genel Dashboard":
     conn = get_ready_conn()
     st.subheader("Genel Satis Ozeti")
     dash_ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
@@ -647,7 +744,7 @@ if section == "Genel Dashboard":
         if st.button("Aylik ozeti olustur/yenile", type="secondary"):
             with st.spinner("Ozet hazirlaniyor..."):
                 sync_products_from_sales(conn)
-                refresh_monthly_summary(conn)
+                refresh_monthly_summary_for_month(conn, dash_ym.strip())
                 st.cache_data.clear()
             st.success("Aylik ozet yenilendi.")
             st.rerun()
@@ -687,9 +784,15 @@ elif section == "Excel Yukle":
         st.caption(f"Son yukleme: {last_week} | {last_file} | {last_rows} satir")
         if st.button("Son yuklemeyi sil", type="secondary"):
             with st.spinner("Siliniyor..."):
+                affected_months_df = df_query(
+                    conn,
+                    "SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym FROM sales WHERE week_label=? AND order_date IS NOT NULL",
+                    (last_week,),
+                )
                 conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
                 conn.commit()
-                refresh_monthly_summary(conn)
+                for ym in affected_months_df["ym"].dropna().astype(str).tolist():
+                    refresh_monthly_summary_for_month(conn, ym)
                 st.cache_data.clear()
             st.success(f"{last_week} haftasi verileri silindi.")
             st.rerun()
@@ -697,9 +800,15 @@ elif section == "Excel Yukle":
         sel_week = st.selectbox("Silmek icin hafta sec", week_opts, key="delete_week_select")
         if st.button("Secili haftayi sil"):
             with st.spinner("Siliniyor..."):
+                affected_months_df = df_query(
+                    conn,
+                    "SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym FROM sales WHERE week_label=? AND order_date IS NOT NULL",
+                    (sel_week,),
+                )
                 conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
                 conn.commit()
-                refresh_monthly_summary(conn)
+                for ym in affected_months_df["ym"].dropna().astype(str).tolist():
+                    refresh_monthly_summary_for_month(conn, ym)
                 st.cache_data.clear()
             st.success(f"{sel_week} haftasi verileri silindi.")
             st.rerun()
@@ -742,7 +851,7 @@ elif section == "Excel Yukle":
         )
         conn.commit()
         sync_products_from_sales(conn)
-        refresh_monthly_summary(conn)
+        refresh_monthly_summary_for_month(conn, fallback_date.strftime("%Y-%m"))
         st.cache_data.clear()
         free_rows = int(parsed["is_free_exit"].sum()) if "is_free_exit" in parsed.columns else 0
         st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
@@ -751,15 +860,16 @@ elif section == "Aylik Rapor":
     conn = get_ready_conn()
     st.subheader("Aylik Satis / Ciro / Kar")
     ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"))
-    report = load_month_data(conn, ym.strip())
+    report_totals = get_month_report_totals(conn, ym.strip())
+    report_products = get_month_report_products(conn, ym.strip())
     free_exit_rows = load_free_exit_rows(conn, ym.strip())
-    if report.empty:
+    if report_products.empty:
         st.info("Bu ay icin veri yok.")
     else:
-        total_qty = float(report["qty"].sum())
-        total_rev = float(report["revenue"].sum())
-        total_cost = float(report["cost_total"].sum())
-        total_profit = float(report["profit"].sum())
+        total_qty = float(report_totals.iloc[0]["total_qty"] or 0)
+        total_rev = float(report_totals.iloc[0]["total_revenue"] or 0)
+        total_cost = float(report_totals.iloc[0]["total_cost"] or 0)
+        total_profit = float(report_totals.iloc[0]["total_profit"] or 0)
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Toplam Adet", f"{total_qty:,.0f}".replace(",", "."))
@@ -767,23 +877,7 @@ elif section == "Aylik Rapor":
         c3.metric("Toplam Maliyet", tr_money(total_cost))
         c4.metric("Gercek Kar", tr_money(total_profit))
 
-        by_product = (
-            report.groupby(["sku", "product_name"], as_index=False)[["qty", "revenue", "cost_total", "profit"]]
-            .sum()
-            .sort_values("revenue", ascending=False)
-        )
-        by_product.rename(
-            columns={
-                "sku": "Stok Kodu",
-                "product_name": "Urun",
-                "qty": "Adet",
-                "revenue": "Ciro",
-                "cost_total": "Maliyet",
-                "profit": "Kar",
-            },
-            inplace=True,
-        )
-        by_product_display = by_product.copy()
+        by_product_display = report_products.copy()
         by_product_display["Adet"] = by_product_display["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
         by_product_display["Ciro"] = by_product_display["Ciro"].map(tr_money)
         by_product_display["Maliyet"] = by_product_display["Maliyet"].map(tr_money)
@@ -791,23 +885,10 @@ elif section == "Aylik Rapor":
         st.dataframe(by_product_display, use_container_width=True, hide_index=True)
 
         st.markdown("#### SKU Detay Kontrol")
-        sku_options = sorted(report["sku"].astype(str).unique().tolist())
+        sku_options = report_products["Stok Kodu"].astype(str).tolist()
         sku_sel = st.selectbox("Detay SKU sec", sku_options, key="sku_detail_select")
-        sku_rows = report[report["sku"].astype(str) == sku_sel].copy()
+        sku_rows = get_month_report_sku_details(conn, ym.strip(), sku_sel)
         if not sku_rows.empty:
-            sku_rows = sku_rows[["week_label", "order_date", "sku", "product_name", "qty", "unit_price", "revenue"]]
-            sku_rows.rename(
-                columns={
-                    "week_label": "Hafta",
-                    "order_date": "Tarih",
-                    "sku": "Stok Kodu",
-                    "product_name": "Urun",
-                    "qty": "Adet",
-                    "unit_price": "Birim Fiyat",
-                    "revenue": "Ciro",
-                },
-                inplace=True,
-            )
             sku_rows["Adet"] = sku_rows["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
             sku_rows["Birim Fiyat"] = sku_rows["Birim Fiyat"].map(tr_money)
             sku_rows["Ciro"] = sku_rows["Ciro"].map(tr_money)
