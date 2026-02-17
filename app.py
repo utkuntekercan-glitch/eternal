@@ -31,6 +31,9 @@ def inject_styles():
         .block-container {max-width: 1200px; padding-top: 1rem;}
         .stApp {background: #0f1218; color: #e8ebf2;}
         .stMetric {border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 8px;}
+        [data-testid="stMetricLabel"] {color: #cfd6e6 !important; font-weight: 700;}
+        [data-testid="stMetricValue"] {color: #ffffff !important; font-weight: 800;}
+        [data-testid="stMetricDelta"] {color: #8fd19e !important;}
         div[data-testid="stDataFrame"] {border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;}
         .stButton > button {border-radius: 10px; font-weight: 700;}
         </style>
