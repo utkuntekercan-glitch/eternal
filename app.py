@@ -358,7 +358,7 @@ def df_query(conn: DBConn, q: str, params=()):
 
 
 def tr_money(x: float) -> str:
-    return f"â‚º{format(float(x), ',.0f').replace(',', '.')}"
+    return f"TL {format(float(x), ',.0f').replace(',', '.')}"
 
 
 def normalize_num(x) -> float:
