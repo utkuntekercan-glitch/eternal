@@ -926,28 +926,36 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
             pdf.drawString(x + 8, card_top - 30, value)
 
         table_top = card_top - card_h - 14
-        col_x = {
-            "sku": margin,
-            "urun": margin + 82,
-            "adet": margin + 320,
-            "ciro": margin + 390,
-            "maliyet": margin + 470,
-            "kar": w - margin,
+        table_w = w - (margin * 2)
+        col_w = {
+            "sku": 70,
+            "urun": 180,
+            "adet": 55,
+            "ciro": 70,
+            "maliyet": 70,
+            "kar": max(60, table_w - (70 + 180 + 55 + 70 + 70)),
         }
+        col_left = {}
+        col_right = {}
+        x_cur = margin
+        for key in ["sku", "urun", "adet", "ciro", "maliyet", "kar"]:
+            col_left[key] = x_cur
+            x_cur += col_w[key]
+            col_right[key] = x_cur
         pdf.setFillColor(colors.HexColor("#1f2937"))
-        pdf.rect(margin, table_top - 18, w - (margin * 2), 18, stroke=0, fill=1)
+        pdf.rect(margin, table_top - 18, table_w, 18, stroke=0, fill=1)
         pdf.setFillColor(colors.white)
         pdf.setFont(font_bold, 8.5)
-        pdf.drawString(col_x["sku"] + 4, table_top - 12, "SKU")
-        pdf.drawString(col_x["urun"] + 4, table_top - 12, "Ürün")
-        pdf.drawRightString(col_x["adet"] + 46, table_top - 12, "Adet")
-        pdf.drawRightString(col_x["ciro"] + 60, table_top - 12, "Ciro")
-        pdf.drawRightString(col_x["maliyet"] + 62, table_top - 12, "Maliyet")
-        pdf.drawRightString(col_x["kar"], table_top - 12, "Kar")
-        return table_top - 24, col_x
+        pdf.drawString(col_left["sku"] + 4, table_top - 12, "SKU")
+        pdf.drawString(col_left["urun"] + 4, table_top - 12, "Ürün")
+        pdf.drawRightString(col_right["adet"] - 4, table_top - 12, "Adet")
+        pdf.drawRightString(col_right["ciro"] - 4, table_top - 12, "Ciro")
+        pdf.drawRightString(col_right["maliyet"] - 4, table_top - 12, "Maliyet")
+        pdf.drawRightString(col_right["kar"] - 4, table_top - 12, "Kar")
+        return table_top - 24, col_left, col_right
 
     page_no = 1
-    y, col_x = draw_header(page_no)
+    y, col_left, col_right = draw_header(page_no)
     row_h = 16
 
     if prod_df.empty:
@@ -964,7 +972,7 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
                 pdf.drawString(margin, 22, "Eternal Fire - Finans Raporu")
                 pdf.showPage()
                 page_no += 1
-                y, col_x = draw_header(page_no)
+                y, col_left, col_right = draw_header(page_no)
             if i % 2 == 0:
                 pdf.setFillColor(colors.HexColor("#f9fafb"))
                 pdf.rect(margin, y - row_h + 3, w - (margin * 2), row_h, stroke=0, fill=1)
@@ -979,12 +987,12 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
             kar = float(r.get("Kar", 0) or 0)
             pdf.setFillColor(colors.HexColor("#111827"))
             pdf.setFont(font_regular, 8.3)
-            pdf.drawString(col_x["sku"] + 4, y - 8, sku[:14])
-            pdf.drawString(col_x["urun"] + 4, y - 8, name)
-            pdf.drawRightString(col_x["adet"] + 46, y - 8, format(adet, ",.0f").replace(",", "."))
-            pdf.drawRightString(col_x["ciro"] + 60, y - 8, money(ciro))
-            pdf.drawRightString(col_x["maliyet"] + 62, y - 8, money(maliyet))
-            pdf.drawRightString(col_x["kar"], y - 8, money(kar))
+            pdf.drawString(col_left["sku"] + 4, y - 8, sku[:14])
+            pdf.drawString(col_left["urun"] + 4, y - 8, name)
+            pdf.drawRightString(col_right["adet"] - 4, y - 8, format(adet, ",.0f").replace(",", "."))
+            pdf.drawRightString(col_right["ciro"] - 4, y - 8, money(ciro))
+            pdf.drawRightString(col_right["maliyet"] - 4, y - 8, money(maliyet))
+            pdf.drawRightString(col_right["kar"] - 4, y - 8, money(kar))
             y -= row_h
 
     pdf.setStrokeColor(colors.HexColor("#e5e7eb"))
