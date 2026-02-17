@@ -631,11 +631,21 @@ def get_dashboard_categories(_conn: DBConn) -> pd.DataFrame:
         """
         SELECT
             COALESCE(p.category, 'Genel') AS "Kategori",
-            COALESCE(SUM(m.revenue), 0) AS "Ciro",
-            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar"
-        FROM sales_monthly_sku m
-        LEFT JOIN products p ON p.sku = m.sku
-        LEFT JOIN product_costs c ON c.sku = m.sku
+            COALESCE(
+                SUM(CASE WHEN COALESCE(s.order_total, 0) > 0 THEN s.order_total ELSE s.revenue END),
+                0
+            ) AS "Ciro",
+            COALESCE(
+                SUM(
+                    (CASE WHEN COALESCE(s.order_total, 0) > 0 THEN s.order_total ELSE s.revenue END)
+                    - (s.qty * COALESCE(c.unit_cost, p.unit_cost, 0))
+                ),
+                0
+            ) AS "Kar"
+        FROM sales s
+        LEFT JOIN products p ON p.sku = s.sku
+        LEFT JOIN product_costs c ON c.sku = s.sku
+        WHERE COALESCE(s.is_free_exit, 0) = 0
         GROUP BY COALESCE(p.category, 'Genel')
         ORDER BY "Ciro" DESC
         """
