@@ -414,19 +414,12 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 def render_brand_header():
-    logo_html = f"<img class='ef-hero-logo' src='{APP_LOGO_URL}' alt='logo' />" if APP_LOGO_URL else ""
-    st.markdown(
-        f"""
-        <div class='ef-hero'>
-            <div class='ef-hero-row'>
-                {logo_html}
-                <div class='ef-title'>Eternal Fire</div>
-            </div>
-            <div class='ef-subtitle'>Satis Operasyon ve Karlilik Kontrol Paneli</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    left, center, right = st.columns([1, 4, 1])
+    with center:
+        if APP_LOGO_URL:
+            st.image(APP_LOGO_URL, width=72)
+        st.title("Eternal Fire")
+        st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
 
 
 inject_styles()
@@ -463,16 +456,10 @@ if not top_stats.empty:
     last_date = str(top_stats.iloc[0]["last_order_date"] or "-")
     sale_rows_txt = f"{sale_rows:,}".replace(",", ".")
     sku_count_txt = f"{sku_count:,}".replace(",", ".")
-    st.markdown(
-        f"""
-        <div class='ef-statbar'>
-            <div class='ef-chip'><div class='ef-chip-k'>Toplam Satir</div><div class='ef-chip-v'>{sale_rows_txt}</div></div>
-            <div class='ef-chip'><div class='ef-chip-k'>Aktif SKU</div><div class='ef-chip-v'>{sku_count_txt}</div></div>
-            <div class='ef-chip'><div class='ef-chip-k'>Son Satis Tarihi</div><div class='ef-chip-v'>{last_date}</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Toplam Satir", sale_rows_txt)
+    s2.metric("Aktif SKU", sku_count_txt)
+    s3.metric("Son Satis Tarihi", last_date)
 
 sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
