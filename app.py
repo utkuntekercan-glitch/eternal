@@ -5,6 +5,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -622,7 +623,7 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
 
 
 def render_header():
-    now_txt = datetime.now().strftime("%d.%m.%Y %H:%M")
+    now_txt = datetime.now(ZoneInfo("Europe/Istanbul")).strftime("%d.%m.%Y %H:%M")
     c1, c2 = st.columns([5, 1])
     with c1:
         if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
