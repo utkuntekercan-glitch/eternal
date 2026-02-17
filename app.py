@@ -72,6 +72,8 @@ def init_db(conn: DBConn):
             id {id_col},
             week_label TEXT NOT NULL,
             order_date TEXT,
+            customer_email TEXT,
+            is_free_exit INTEGER NOT NULL DEFAULT 0,
             sku TEXT NOT NULL,
             product_name TEXT NOT NULL,
             qty REAL NOT NULL,
@@ -82,6 +84,15 @@ def init_db(conn: DBConn):
         )
         """
     )
+    # Backward-compatible column migration for existing databases.
+    try:
+        conn.execute("ALTER TABLE sales ADD COLUMN customer_email TEXT")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE sales ADD COLUMN is_free_exit INTEGER NOT NULL DEFAULT 0")
+    except Exception:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS costs (
@@ -155,12 +166,16 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str) -> pd.DataFrame:
 
     rows = []
     for r in ws.iter_rows(min_row=2):
+        customer_email = "" if r[4].value is None else str(r[4].value).strip().lower()  # E
+        is_free_exit = 1 if customer_email == "hakanerdgnn@gmail.com" else 0
         qty = normalize_num(r[17].value)   # R
         name = "" if r[18].value is None else str(r[18].value).strip()  # S
         price = normalize_num(r[20].value)  # U
         sku = "" if r[24].value is None else str(r[24].value).strip()   # Y
         rows.append(
             {
+                "customer_email": customer_email,
+                "is_free_exit": is_free_exit,
                 "product_name": name,
                 "sku": sku,
                 "qty": qty,
@@ -255,7 +270,7 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     sales = df_query(
         conn,
         """
-        SELECT week_label, order_date, sku, product_name, qty, unit_price, revenue
+        SELECT week_label, order_date, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue
         FROM sales
         WHERE order_date >= ? AND order_date < ?
         """,
@@ -264,8 +279,10 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     if sales.empty:
         return sales
 
+    # Keep free-exit rows for separate listing, but exclude from financial calculations.
+    sales_calc = sales[sales["is_free_exit"].fillna(0).astype(int) == 0].copy()
     products = df_query(conn, "SELECT sku, category, unit_cost, active FROM products")
-    merged = sales.merge(products, on="sku", how="left")
+    merged = sales_calc.merge(products, on="sku", how="left")
     merged["category"] = merged["category"].fillna("Genel")
     merged["active"] = merged["active"].fillna(1)
     merged["unit_cost"] = merged["unit_cost"].fillna(0.0)
@@ -379,6 +396,8 @@ with tab1:
             (
                 r["week_label"],
                 r["order_date"],
+                r["customer_email"],
+                int(r["is_free_exit"]),
                 r["sku"],
                 r["product_name"],
                 float(r["qty"]),
@@ -391,19 +410,34 @@ with tab1:
         ]
         conn.executemany(
             """
-            INSERT INTO sales(week_label, order_date, sku, product_name, qty, unit_price, revenue, source_file, source_hash)
-            VALUES(?,?,?,?,?,?,?,?,?)
+            INSERT INTO sales(week_label, order_date, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue, source_file, source_hash)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)
             """,
             rows,
         )
         conn.commit()
         sync_products_from_sales(conn)
-        st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi.")
+        free_rows = int(parsed["is_free_exit"].sum()) if "is_free_exit" in parsed.columns else 0
+        st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
 
 with tab2:
     st.subheader("Aylik Satis / Ciro / Kar")
     ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"))
     report = load_month_data(conn, ym.strip())
+    start = f"{ym.strip()}-01"
+    y, m = map(int, ym.strip().split("-"))
+    end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
+    free_exit_rows = df_query(
+        conn,
+        """
+        SELECT week_label, order_date, customer_email, sku, product_name, qty, unit_price, revenue
+        FROM sales
+        WHERE order_date >= ? AND order_date < ?
+          AND COALESCE(is_free_exit, 0) = 1
+        ORDER BY order_date, week_label
+        """,
+        (start, end),
+    )
     if report.empty:
         st.info("Bu ay icin veri yok.")
     else:
@@ -463,6 +497,27 @@ with tab2:
             sku_rows["Birim Fiyat"] = sku_rows["Birim Fiyat"].map(tr_money)
             sku_rows["Ciro"] = sku_rows["Ciro"].map(tr_money)
             st.dataframe(sku_rows, use_container_width=True, hide_index=True)
+
+    st.markdown("#### Bedelsiz Cikislar (hakanerdgnn@gmail.com)")
+    if free_exit_rows.empty:
+        st.info("Bu ay bedelsiz cikis yok.")
+    else:
+        free_disp = free_exit_rows.rename(
+            columns={
+                "week_label": "Hafta",
+                "order_date": "Tarih",
+                "customer_email": "E-Posta",
+                "sku": "Stok Kodu",
+                "product_name": "Urun",
+                "qty": "Adet",
+                "unit_price": "Birim Fiyat",
+                "revenue": "Bedelsiz Tutar",
+            }
+        )
+        free_disp["Adet"] = free_disp["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
+        free_disp["Birim Fiyat"] = free_disp["Birim Fiyat"].map(tr_money)
+        free_disp["Bedelsiz Tutar"] = free_disp["Bedelsiz Tutar"].map(tr_money)
+        st.dataframe(free_disp, use_container_width=True, hide_index=True)
 
 with tab3:
     st.subheader("Urun Master (Kategori + Maliyet + Aktif)")
