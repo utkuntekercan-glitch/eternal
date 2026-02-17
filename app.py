@@ -19,6 +19,7 @@ st.set_page_config(page_title="Eternal Fire", layout="wide")
 DB_PATH = Path("sales_reports.db")
 DATABASE_URL = str(st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", ""))).strip()
 USE_POSTGRES = bool(DATABASE_URL)
+APP_LOGO_URL = str(st.secrets.get("APP_LOGO_URL", os.getenv("APP_LOGO_URL", ""))).strip()
 
 
 def inject_styles():
@@ -41,6 +42,28 @@ def inject_styles():
             padding-top: 1.2rem;
             max-width: 1280px;
         }
+        .ef-hero {
+            border: 1px solid rgba(255,255,255,0.16);
+            border-radius: 14px;
+            background: linear-gradient(160deg, rgba(191,34,40,0.28), rgba(10,12,16,0.88));
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+        }
+        .ef-hero-row {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+        .ef-hero-logo {
+            width: 48px;
+            height: 48px;
+            object-fit: contain;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.08);
+            padding: 4px;
+        }
         .ef-title {
             text-align: center;
             font-size: 2.1rem;
@@ -53,7 +76,7 @@ def inject_styles():
             text-align: center;
             font-size: 0.95rem;
             color: #b7bec9;
-            margin-bottom: 1rem;
+            margin-bottom: 0;
         }
         .ef-statbar {
             display: grid;
@@ -90,6 +113,10 @@ def inject_styles():
             padding: 6px 10px;
             margin-right: 6px;
         }
+        div[role="radiogroup"] label:has(input:checked) {
+            border: 1px solid rgba(248,210,106,0.55);
+            background: linear-gradient(180deg, rgba(248,210,106,0.20), rgba(248,210,106,0.10));
+        }
         .stMetric {
             background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
             border: 1px solid rgba(255,255,255,0.12);
@@ -100,6 +127,10 @@ def inject_styles():
             border: 1px solid rgba(255,255,255,0.14);
             border-radius: 12px;
             overflow: hidden;
+        }
+        .stButton > button {
+            border-radius: 10px;
+            border: 1px solid rgba(248,210,106,0.45);
         }
         </style>
         """,
@@ -382,9 +413,24 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     return merged
 
 
+def render_brand_header():
+    logo_html = f"<img class='ef-hero-logo' src='{APP_LOGO_URL}' alt='logo' />" if APP_LOGO_URL else ""
+    st.markdown(
+        f"""
+        <div class='ef-hero'>
+            <div class='ef-hero-row'>
+                {logo_html}
+                <div class='ef-title'>Eternal Fire</div>
+            </div>
+            <div class='ef-subtitle'>Satis Operasyon ve Karlilik Kontrol Paneli</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 inject_styles()
-st.markdown("<div class='ef-title'>Eternal Fire</div>", unsafe_allow_html=True)
-st.markdown("<div class='ef-subtitle'>Satis Operasyon ve Karlilik Kontrol Paneli</div>", unsafe_allow_html=True)
+render_brand_header()
 
 if "_sales_conn" not in st.session_state:
     st.session_state["_sales_conn"] = get_conn()
