@@ -356,8 +356,22 @@ def find_order_no_col(ws) -> int | None:
     return None
 
 
-def order_item_key(order_no: str, order_date: str, sku: str, qty: float, unit_price: float, customer_email: str) -> str:
-    base = f"{order_no}|{order_date}|{sku}|{qty:.6f}|{unit_price:.6f}|{customer_email}"
+def build_order_item_key(
+    order_no: str,
+    order_date: str,
+    sku: str,
+    qty: float,
+    unit_price: float,
+    customer_email: str,
+    source_hash: str,
+    excel_row_no: int,
+) -> str:
+    # Prefer stable business key when order number exists.
+    if order_no:
+        base = f"ord:{order_no}|{order_date}|{sku}|{qty:.6f}|{unit_price:.6f}|{customer_email}"
+    else:
+        # Fallback keeps each source row unique while still deduping re-import of same file.
+        base = f"src:{source_hash}|row:{excel_row_no}|{order_date}|{sku}|{qty:.6f}|{unit_price:.6f}|{customer_email}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
 
@@ -368,7 +382,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     ws = wb.active
     order_no_idx = find_order_no_col(ws)
     rows = []
-    for r in ws.iter_rows(min_row=2):
+    for excel_row_no, r in enumerate(ws.iter_rows(min_row=2), start=2):
         pay_status = "" if r[6].value is None else str(r[6].value).strip().lower()  # G
         if pay_status != "ödendi" and pay_status != "odendi":
             continue
@@ -387,13 +401,12 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
         unit_price = normalize_num(r[20].value)  # U
         sku = "" if r[24].value is None else str(r[24].value).strip()  # Y
         if sku and product_name and qty > 0:
-            item_key = order_item_key(order_no, order_date, sku, float(qty), float(unit_price), customer_email)
             rows.append(
                 {
                     "week_label": week_label,
                     "order_date": order_date,
                     "order_no": order_no,
-                    "order_item_key": item_key,
+                    "excel_row_no": int(excel_row_no),
                     "customer_email": customer_email,
                     "is_free_exit": is_free_exit,
                     "sku": sku,
@@ -900,6 +913,19 @@ elif section == "Veri Ekle":
             else:
                 parsed["source_file"] = source_file
                 parsed["source_hash"] = source_hash
+                parsed["order_item_key"] = parsed.apply(
+                    lambda r: build_order_item_key(
+                        str(r.get("order_no", "") or ""),
+                        str(r.get("order_date", "") or ""),
+                        str(r.get("sku", "") or ""),
+                        float(r.get("qty", 0) or 0),
+                        float(r.get("unit_price", 0) or 0),
+                        str(r.get("customer_email", "") or ""),
+                        source_hash,
+                        int(r.get("excel_row_no", 0) or 0),
+                    ),
+                    axis=1,
+                )
                 rows = [
                     (
                         r["week_label"],
