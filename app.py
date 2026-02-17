@@ -130,6 +130,15 @@ def init_db(conn: DBConn):
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS product_costs (
+            sku TEXT PRIMARY KEY,
+            unit_cost REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS sales_monthly_sku (
             ym TEXT NOT NULL,
             sku TEXT NOT NULL,
@@ -146,6 +155,7 @@ def init_db(conn: DBConn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_free ON sales(is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_free ON sales(order_date, is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_monthly_ym ON sales_monthly_sku(ym)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_product_costs_sku ON product_costs(sku)")
     conn.commit()
 
 
@@ -254,6 +264,22 @@ def upsert_products_from_rows(conn: DBConn, rows_df: pd.DataFrame):
     conn.commit()
 
 
+def upsert_product_costs(conn: DBConn, rows):
+    now = datetime.now().isoformat(timespec="seconds")
+    payload = [(r[0], float(r[1]), now) for r in rows]
+    conn.executemany(
+        """
+        INSERT INTO product_costs(sku, unit_cost, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(sku) DO UPDATE SET
+            unit_cost=excluded.unit_cost,
+            updated_at=excluded.updated_at
+        """,
+        payload,
+    )
+    conn.commit()
+
+
 def refresh_monthly_summary_for_month(conn: DBConn, ym: str):
     start, end = month_bounds(ym)
     conn.execute("DELETE FROM sales_monthly_sku WHERE ym=?", (ym,))
@@ -316,10 +342,11 @@ def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
         SELECT
             COALESCE(SUM(m.qty), 0) AS total_qty,
             COALESCE(SUM(m.revenue), 0) AS total_revenue,
-            COALESCE(SUM(m.qty * COALESCE(p.unit_cost, 0)), 0) AS total_cost,
-            COALESCE(SUM(m.revenue - (m.qty * COALESCE(p.unit_cost, 0))), 0) AS total_profit
+            COALESCE(SUM(m.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS total_cost,
+            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS total_profit
         FROM sales_monthly_sku m
         LEFT JOIN products p ON p.sku = m.sku
+        LEFT JOIN product_costs c ON c.sku = m.sku
         WHERE m.ym = ?
         """,
         (ym,),
@@ -349,9 +376,10 @@ def get_dashboard_categories(_conn: DBConn, ym: str) -> pd.DataFrame:
         SELECT
             COALESCE(p.category, 'Genel') AS "Kategori",
             COALESCE(SUM(m.revenue), 0) AS "Ciro",
-            COALESCE(SUM(m.revenue - (m.qty * COALESCE(p.unit_cost, 0))), 0) AS "Kar"
+            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar"
         FROM sales_monthly_sku m
         LEFT JOIN products p ON p.sku = m.sku
+        LEFT JOIN product_costs c ON c.sku = m.sku
         WHERE m.ym = ?
         GROUP BY COALESCE(p.category, 'Genel')
         ORDER BY "Ciro" DESC
@@ -370,10 +398,11 @@ def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
             MAX(m.product_name) AS "Urun",
             COALESCE(SUM(m.qty), 0) AS "Adet",
             COALESCE(SUM(m.revenue), 0) AS "Ciro",
-            COALESCE(SUM(m.qty * COALESCE(p.unit_cost, 0)), 0) AS "Maliyet",
-            COALESCE(SUM(m.revenue - (m.qty * COALESCE(p.unit_cost, 0))), 0) AS "Kar"
+            COALESCE(SUM(m.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS "Maliyet",
+            COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar"
         FROM sales_monthly_sku m
         LEFT JOIN products p ON p.sku = m.sku
+        LEFT JOIN product_costs c ON c.sku = m.sku
         WHERE m.ym = ?
         GROUP BY m.sku
         ORDER BY "Ciro" DESC
@@ -396,10 +425,11 @@ def get_month_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
             SELECT
                 COALESCE(SUM(m.qty), 0) AS "Adet",
                 COALESCE(SUM(m.revenue), 0) AS "Ciro",
-                COALESCE(SUM(m.qty * COALESCE(p.unit_cost, 0)), 0) AS "Maliyet",
-                COALESCE(SUM(m.revenue - (m.qty * COALESCE(p.unit_cost, 0))), 0) AS "Kar"
+                COALESCE(SUM(m.qty * COALESCE(c.unit_cost, p.unit_cost, 0)), 0) AS "Maliyet",
+                COALESCE(SUM(m.revenue - (m.qty * COALESCE(c.unit_cost, p.unit_cost, 0))), 0) AS "Kar"
             FROM sales_monthly_sku m
             LEFT JOIN products p ON p.sku = m.sku
+            LEFT JOIN product_costs c ON c.sku = m.sku
             WHERE m.ym = ?
         ) x
         """,
@@ -460,8 +490,14 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT sku, product_name, category, unit_cost, active
-        FROM products
+        SELECT
+            p.sku,
+            p.product_name,
+            p.category,
+            COALESCE(c.unit_cost, p.unit_cost, 0) AS unit_cost,
+            p.active
+        FROM products p
+        LEFT JOIN product_costs c ON c.sku = p.sku
         ORDER BY product_name
         """,
     )
@@ -725,6 +761,7 @@ else:
         if st.button("Urun Maliyet Kaydet", type="primary"):
             now = datetime.now().isoformat(timespec="seconds")
             rows = []
+            cost_rows = []
             for _, r in edited.iterrows():
                 rows.append(
                     (
@@ -736,6 +773,7 @@ else:
                         now,
                     )
                 )
+                cost_rows.append((r["sku"], float(r["unit_cost"])))
             conn.executemany(
                 """
                 INSERT INTO products(sku, product_name, category, unit_cost, active, updated_at)
@@ -750,5 +788,6 @@ else:
                 rows,
             )
             conn.commit()
+            upsert_product_costs(conn, cost_rows)
             st.cache_data.clear()
             st.success("Urun master kaydedildi.")
