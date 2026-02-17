@@ -30,14 +30,93 @@ def inject_styles():
     st.markdown(
         """
         <style>
-        .block-container {max-width: 1200px; padding-top: 1rem;}
-        .stApp {background: #0f1218; color: #e8ebf2;}
-        .stMetric {border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 8px;}
+        :root {
+            --bg: #0f1218;
+            --panel: #161b24;
+            --panel-2: #1b2230;
+            --text: #e8ebf2;
+            --muted: #aeb8cb;
+            --accent: #f0b429;
+            --danger: #c7363e;
+            --line: rgba(255,255,255,0.14);
+        }
+        .block-container {max-width: 1240px; padding-top: 0.8rem;}
+        .stApp {
+            background:
+                radial-gradient(900px 320px at 4% -10%, rgba(240,180,41,0.18), transparent 55%),
+                radial-gradient(880px 300px at 100% 0%, rgba(199,54,62,0.18), transparent 48%),
+                var(--bg);
+            color: var(--text);
+        }
+        .ef-shell {
+            background: linear-gradient(165deg, #1a202c, #121722);
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.25);
+        }
+        .ef-shell-title {
+            font-size: 1.55rem;
+            font-weight: 800;
+            letter-spacing: 0.2px;
+            color: #ffffff;
+            margin: 0;
+        }
+        .ef-shell-sub {
+            color: var(--muted);
+            font-size: 0.92rem;
+            margin: 2px 0 8px 0;
+        }
+        .ef-chip-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .ef-chip {
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 0.78rem;
+            color: #f7f8fb;
+            background: rgba(255,255,255,0.05);
+        }
+        .stMetric {
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 8px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+        }
         [data-testid="stMetricLabel"] {color: #cfd6e6 !important; font-weight: 700;}
         [data-testid="stMetricValue"] {color: #ffffff !important; font-weight: 800;}
         [data-testid="stMetricDelta"] {color: #8fd19e !important;}
-        div[data-testid="stDataFrame"] {border: 1px solid rgba(255,255,255,0.12); border-radius: 10px;}
-        .stButton > button {border-radius: 10px; font-weight: 700;}
+        div[data-testid="stDataFrame"] {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            background: var(--panel);
+        }
+        .stButton > button {
+            border-radius: 10px;
+            font-weight: 700;
+            border: 1px solid rgba(240,180,41,0.45);
+        }
+        div[role="radiogroup"] {
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 6px;
+            background: rgba(255,255,255,0.03);
+        }
+        div[role="radiogroup"] label {
+            border: 1px solid rgba(255,255,255,0.16);
+            border-radius: 9px;
+            padding: 4px 10px;
+            margin-right: 6px;
+            background: rgba(255,255,255,0.03);
+        }
+        .stTextInput > div > div, .stSelectbox > div > div, .stDateInput > div > div {
+            background: var(--panel-2);
+            border-radius: 10px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -504,12 +583,31 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
 
 
 def render_header():
-    col1, col2, col3 = st.columns([1, 6, 1])
-    with col2:
-        if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
-            st.image(APP_LOGO_URL, width=72)
-        st.title("Eternal Fire")
-        st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
+    now_txt = datetime.now().strftime("%d.%m.%Y %H:%M")
+    logo_html = ""
+    if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
+        logo_html = f"<img src='{APP_LOGO_URL}' style='height:44px;border-radius:8px;margin-right:10px;' />"
+    st.markdown(
+        f"""
+        <div class="ef-shell">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+                <div style="display:flex;align-items:center;">
+                    {logo_html}
+                    <div>
+                        <p class="ef-shell-title">Eternal Fire</p>
+                        <p class="ef-shell-sub">Satis Operasyon ve Karlilik Kontrol Paneli</p>
+                    </div>
+                </div>
+            </div>
+            <div class="ef-chip-row">
+                <span class="ef-chip">Canli Sistem</span>
+                <span class="ef-chip">Supabase / PostgreSQL</span>
+                <span class="ef-chip">Son Giris: {now_txt}</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_login():
@@ -535,7 +633,9 @@ if not st.session_state["authenticated"]:
     render_login()
     st.stop()
 
-top_c1, top_c2 = st.columns([5, 1])
+top_c1, top_c2 = st.columns([6, 1])
+with top_c1:
+    st.caption("Moduller: Dashboard, Excel yukleme, aylik rapor, urun maliyet yonetimi")
 with top_c2:
     if st.button("Cikis"):
         st.session_state["authenticated"] = False
