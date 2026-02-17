@@ -21,6 +21,92 @@ DATABASE_URL = str(st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", ""))
 USE_POSTGRES = bool(DATABASE_URL)
 
 
+def inject_styles():
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap');
+
+        html, body, [class*="css"]  {
+            font-family: 'Manrope', sans-serif;
+        }
+        .stApp {
+            background:
+                radial-gradient(1200px 420px at 8% -8%, rgba(212,175,55,0.20), transparent 55%),
+                radial-gradient(950px 380px at 100% 0%, rgba(191,34,40,0.18), transparent 45%),
+                #0b0d11;
+            color: #e8eaee;
+        }
+        .block-container {
+            padding-top: 1.2rem;
+            max-width: 1280px;
+        }
+        .ef-title {
+            text-align: center;
+            font-size: 2.1rem;
+            font-weight: 800;
+            letter-spacing: 0.6px;
+            margin: 0.2rem 0 0.1rem 0;
+            color: #f3f5f7;
+        }
+        .ef-subtitle {
+            text-align: center;
+            font-size: 0.95rem;
+            color: #b7bec9;
+            margin-bottom: 1rem;
+        }
+        .ef-statbar {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 10px;
+            margin: 0.2rem 0 1rem 0;
+        }
+        .ef-chip {
+            background: linear-gradient(160deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+        .ef-chip-k {
+            font-size: 0.75rem;
+            color: #b7bec9;
+        }
+        .ef-chip-v {
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: #f8d26a;
+        }
+        div[role="radiogroup"] {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 12px;
+            padding: 6px 8px;
+            margin-bottom: 8px;
+        }
+        div[role="radiogroup"] label {
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 10px;
+            padding: 6px 10px;
+            margin-right: 6px;
+        }
+        .stMetric {
+            background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 12px;
+            padding: 8px 10px;
+        }
+        div.stDataFrame, div[data-testid="stDataEditor"] {
+            border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 class DBConn:
     def __init__(self, driver: str, raw_conn):
         self.driver = driver
@@ -296,7 +382,9 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     return merged
 
 
-st.markdown("<h1 style='text-align:center;'>Eternal Fire</h1>", unsafe_allow_html=True)
+inject_styles()
+st.markdown("<div class='ef-title'>Eternal Fire</div>", unsafe_allow_html=True)
+st.markdown("<div class='ef-subtitle'>Satis Operasyon ve Karlilik Kontrol Paneli</div>", unsafe_allow_html=True)
 
 if "_sales_conn" not in st.session_state:
     st.session_state["_sales_conn"] = get_conn()
@@ -312,6 +400,33 @@ if "_sales_bootstrap" not in st.session_state:
     if pcount == 0:
         sync_products_from_sales(conn)
     st.session_state["_sales_bootstrap"] = True
+
+top_stats = df_query(
+    conn,
+    """
+    SELECT
+        COUNT(*) AS sale_rows,
+        COUNT(DISTINCT sku) AS sku_count,
+        MAX(order_date) AS last_order_date
+    FROM sales
+    """,
+)
+if not top_stats.empty:
+    sale_rows = int(top_stats.iloc[0]["sale_rows"] or 0)
+    sku_count = int(top_stats.iloc[0]["sku_count"] or 0)
+    last_date = str(top_stats.iloc[0]["last_order_date"] or "-")
+    sale_rows_txt = f"{sale_rows:,}".replace(",", ".")
+    sku_count_txt = f"{sku_count:,}".replace(",", ".")
+    st.markdown(
+        f"""
+        <div class='ef-statbar'>
+            <div class='ef-chip'><div class='ef-chip-k'>Toplam Satir</div><div class='ef-chip-v'>{sale_rows_txt}</div></div>
+            <div class='ef-chip'><div class='ef-chip-k'>Aktif SKU</div><div class='ef-chip-v'>{sku_count_txt}</div></div>
+            <div class='ef-chip'><div class='ef-chip-k'>Son Satis Tarihi</div><div class='ef-chip-v'>{last_date}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
