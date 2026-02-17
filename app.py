@@ -584,30 +584,20 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
 
 def render_header():
     now_txt = datetime.now().strftime("%d.%m.%Y %H:%M")
-    logo_html = ""
-    if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
-        logo_html = f"<img src='{APP_LOGO_URL}' style='height:44px;border-radius:8px;margin-right:10px;' />"
-    st.markdown(
-        f"""
-        <div class="ef-shell">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-                <div style="display:flex;align-items:center;">
-                    {logo_html}
-                    <div>
-                        <p class="ef-shell-title">Eternal Fire</p>
-                        <p class="ef-shell-sub">Satis Operasyon ve Karlilik Kontrol Paneli</p>
-                    </div>
-                </div>
-            </div>
-            <div class="ef-chip-row">
-                <span class="ef-chip">Canli Sistem</span>
-                <span class="ef-chip">Supabase / PostgreSQL</span>
-                <span class="ef-chip">Son Giris: {now_txt}</span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    c1, c2 = st.columns([5, 1])
+    with c1:
+        if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
+            st.image(APP_LOGO_URL, width=64)
+        st.title("Eternal Fire")
+        st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
+    with c2:
+        st.caption("Son Giris")
+        st.code(now_txt)
+
+    b1, b2, b3 = st.columns(3)
+    b1.info("Canli Sistem")
+    b2.info("Supabase / PostgreSQL")
+    b3.info("Panel Aktif")
 
 
 def render_login():
