@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from openpyxl import load_workbook
 
 try:
     import psycopg2
@@ -250,20 +249,6 @@ def df_query(conn: DBConn, q: str, params=()):
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def get_top_stats_cached(_conn: DBConn) -> pd.DataFrame:
-    return df_query(
-        _conn,
-        """
-        SELECT
-            COUNT(*) AS sale_rows,
-            COUNT(DISTINCT sku) AS sku_count,
-            MAX(order_date) AS last_order_date
-        FROM sales
-        """,
-    )
-
-
-@st.cache_data(ttl=60, show_spinner=False)
 def get_uploads_cached(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -319,6 +304,8 @@ def normalize_num(x) -> float:
 
 
 def parse_uploaded_excel(file_bytes: bytes, week_label: str) -> pd.DataFrame:
+    from openpyxl import load_workbook
+
     # Read with fixed Excel letters to avoid index-shift issues across exports.
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     ws = wb.active
@@ -498,18 +485,6 @@ if "_sales_bootstrap" not in st.session_state:
         sync_products_from_sales(conn)
         st.cache_data.clear()
     st.session_state["_sales_bootstrap"] = True
-
-top_stats = get_top_stats_cached(conn)
-if not top_stats.empty:
-    sale_rows = int(top_stats.iloc[0]["sale_rows"] or 0)
-    sku_count = int(top_stats.iloc[0]["sku_count"] or 0)
-    last_date = str(top_stats.iloc[0]["last_order_date"] or "-")
-    sale_rows_txt = f"{sale_rows:,}".replace(",", ".")
-    sku_count_txt = f"{sku_count:,}".replace(",", ".")
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Toplam Satir", sale_rows_txt)
-    s2.metric("Aktif SKU", sku_count_txt)
-    s3.metric("Son Satis Tarihi", last_date)
 
 sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
