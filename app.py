@@ -949,7 +949,7 @@ section = st.radio("Bolum", sections, horizontal=True, label_visibility="collaps
 
 if section == "Dashboard":
     conn = get_ready_conn()
-    a1, a2, a3 = st.columns([1, 1, 2])
+    a1, a2 = st.columns([1, 2])
     with a1:
         if st.button("Ozeti Yenile", type="secondary"):
             with st.spinner("Ozet yenileniyor..."):
@@ -958,23 +958,35 @@ if section == "Dashboard":
             st.success("Dashboard ozeti yenilendi.")
             st.rerun()
     with a2:
-        pdf_ym = st.text_input("PDF Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_pdf_ym")
-    with a3:
-        pdf_disabled = (canvas is None) or (not is_valid_ym(pdf_ym))
         if canvas is None:
             st.caption("PDF icin reportlab gerekli.")
         else:
-            pdf_prod_df = get_month_products(conn, pdf_ym.strip()) if is_valid_ym(pdf_ym) else pd.DataFrame()
-            pdf_totals_df = get_month_totals(conn, pdf_ym.strip()) if is_valid_ym(pdf_ym) else pd.DataFrame()
-            pdf_order_total_df = get_month_order_total(conn, pdf_ym.strip()) if is_valid_ym(pdf_ym) else pd.DataFrame()
-            pdf_bytes = build_month_pdf(pdf_ym.strip(), pdf_totals_df, pdf_order_total_df, pdf_prod_df) if is_valid_ym(pdf_ym) else None
-            st.download_button(
-                "Aylik PDF Rapor",
-                data=pdf_bytes or b"",
-                file_name=f"eternal-fire-aylik-rapor-{pdf_ym.strip()}.pdf",
-                mime="application/pdf",
-                disabled=pdf_disabled or (pdf_bytes is None),
-            )
+            with st.popover("Aylik PDF Rapor"):
+                month_options_df = df_query(
+                    conn,
+                    """
+                    SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
+                    FROM sales
+                    WHERE COALESCE(is_free_exit, 0) = 0
+                    ORDER BY ym DESC
+                    """,
+                )
+                month_options = month_options_df["ym"].dropna().astype(str).tolist() if not month_options_df.empty else []
+                default_ym = datetime.today().strftime("%Y-%m")
+                if default_ym not in month_options:
+                    month_options = [default_ym] + month_options
+                pdf_ym = st.selectbox("Ay Sec", month_options, key="dash_pdf_ym_select")
+                pdf_prod_df = get_month_products(conn, pdf_ym.strip())
+                pdf_totals_df = get_month_totals(conn, pdf_ym.strip())
+                pdf_order_total_df = get_month_order_total(conn, pdf_ym.strip())
+                pdf_bytes = build_month_pdf(pdf_ym.strip(), pdf_totals_df, pdf_order_total_df, pdf_prod_df)
+                st.download_button(
+                    "PDF Indir",
+                    data=pdf_bytes or b"",
+                    file_name=f"eternal-fire-aylik-rapor-{pdf_ym.strip()}.pdf",
+                    mime="application/pdf",
+                    disabled=(pdf_bytes is None),
+                )
 
     metrics = get_dashboard_metrics(conn)
     order_total_df = get_dashboard_order_total(conn)
