@@ -527,6 +527,18 @@ def get_dashboard_metrics(_conn: DBConn) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_dashboard_order_rows(_conn: DBConn) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT COUNT(*) AS order_rows
+        FROM sales
+        WHERE COALESCE(is_free_exit, 0) = 0
+        """,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_top_products(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -767,20 +779,23 @@ if section == "Dashboard":
         st.rerun()
 
     metrics = get_dashboard_metrics(conn)
+    order_rows_df = get_dashboard_order_rows(conn)
     if metrics.empty or float(metrics.iloc[0]["total_revenue"] or 0) <= 0:
         st.info("Gosterilecek veri yok.")
     else:
+        order_rows = int(order_rows_df.iloc[0]["order_rows"] or 0) if not order_rows_df.empty else 0
         q = float(metrics.iloc[0]["total_qty"] or 0)
         rev = float(metrics.iloc[0]["total_revenue"] or 0)
         cost = float(metrics.iloc[0]["total_cost"] or 0)
         profit = float(metrics.iloc[0]["total_profit"] or 0)
         margin = (profit / rev * 100.0) if rev > 0 else 0.0
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Toplam Adet", f"{q:,.0f}".replace(",", "."))
-        c2.metric("Toplam Ciro", tr_money(rev))
-        c3.metric("Toplam Maliyet", tr_money(cost))
-        c4.metric("Net Kar", tr_money(profit))
-        c5.metric("Kar Marji", f"%{margin:.1f}")
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("Toplam Siparis Satiri", f"{order_rows:,.0f}".replace(",", "."))
+        c2.metric("Toplam Adet", f"{q:,.0f}".replace(",", "."))
+        c3.metric("Toplam Ciro", tr_money(rev))
+        c4.metric("Toplam Maliyet", tr_money(cost))
+        c5.metric("Net Kar", tr_money(profit))
+        c6.metric("Kar Marji", f"%{margin:.1f}")
 
         st.markdown("#### En Cok Satan Urunler")
         top_df = get_dashboard_top_products(conn)
