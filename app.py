@@ -413,7 +413,15 @@ def normalize_excel_date(value, fallback_iso: str) -> str:
             if serial > 1000:
                 d = datetime(1899, 12, 30) + timedelta(days=serial)
                 return d.strftime("%Y-%m-%d")
-        dt = pd.to_datetime(str(value).strip(), errors="coerce", dayfirst=True)
+        s = str(value).strip()
+        # Keep ISO dates deterministic (avoid day/month swap with dayfirst=True).
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?", s):
+            return s[:10]
+        # Turkish-style textual date (DD.MM.YYYY or DD/MM/YYYY).
+        if re.fullmatch(r"\d{1,2}[./]\d{1,2}[./]\d{4}([ T]\d{2}:\d{2}(:\d{2})?)?", s):
+            dt = pd.to_datetime(s, errors="coerce", dayfirst=True)
+        else:
+            dt = pd.to_datetime(s, errors="coerce", dayfirst=False)
         if pd.isna(dt):
             return fallback_iso
         # Guard against bad parse (e.g., impossible historical/future years).
