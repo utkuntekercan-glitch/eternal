@@ -507,7 +507,7 @@ def get_recent_sales(_conn: DBConn, limit_n: int = 300) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
+def get_dashboard_metrics(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
@@ -519,29 +519,26 @@ def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
         FROM sales_monthly_sku m
         LEFT JOIN products p ON p.sku = m.sku
         LEFT JOIN product_costs c ON c.sku = m.sku
-        WHERE m.ym = ?
         """,
-        (ym,),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_dashboard_top_products(_conn: DBConn, ym: str) -> pd.DataFrame:
+def get_dashboard_top_products(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT sku AS "Stok Kodu", product_name AS "Urun", qty AS "Adet"
+        SELECT sku AS "Stok Kodu", MAX(product_name) AS "Urun", SUM(qty) AS "Adet"
         FROM sales_monthly_sku
-        WHERE ym = ?
-        ORDER BY qty DESC
+        GROUP BY sku
+        ORDER BY SUM(qty) DESC
         LIMIT 10
         """,
-        (ym,),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_dashboard_categories(_conn: DBConn, ym: str) -> pd.DataFrame:
+def get_dashboard_categories(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
@@ -552,11 +549,9 @@ def get_dashboard_categories(_conn: DBConn, ym: str) -> pd.DataFrame:
         FROM sales_monthly_sku m
         LEFT JOIN products p ON p.sku = m.sku
         LEFT JOIN product_costs c ON c.sku = m.sku
-        WHERE m.ym = ?
         GROUP BY COALESCE(p.category, 'Genel')
         ORDER BY "Ciro" DESC
-        """,
-        (ym,),
+        """
     )
 
 
@@ -756,26 +751,21 @@ with top_c2:
         st.session_state["authenticated"] = False
         st.rerun()
 
-sections = ["Genel Dashboard", "Veri Ekle", "Aylik Rapor", "Bedelsiz Cikislar", "Urunler"]
+sections = ["Dashboard", "Veri Ekle", "Aylik Rapor", "Bedelsiz Cikislar", "Urunler"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
-if section == "Genel Dashboard":
+if section == "Dashboard":
     conn = get_ready_conn()
-    ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
-    if not is_valid_ym(ym):
-        st.warning("Ay formati gecersiz. Ornek: 2026-02")
-        st.stop()
-
-    if st.button("Aylik ozeti olustur/yenile", type="secondary"):
+    if st.button("Ozeti Yenile", type="secondary"):
         with st.spinner("Ozet yenileniyor..."):
-            refresh_monthly_summary_for_month(conn, ym.strip())
+            refresh_monthly_summary_all(conn)
             st.cache_data.clear()
-        st.success("Aylik ozet yenilendi.")
+        st.success("Dashboard ozeti yenilendi.")
         st.rerun()
 
-    metrics = get_dashboard_metrics(conn, ym.strip())
+    metrics = get_dashboard_metrics(conn)
     if metrics.empty or float(metrics.iloc[0]["total_revenue"] or 0) <= 0:
-        st.info("Bu ay icin veri yok.")
+        st.info("Gosterilecek veri yok.")
     else:
         q = float(metrics.iloc[0]["total_qty"] or 0)
         rev = float(metrics.iloc[0]["total_revenue"] or 0)
@@ -790,13 +780,13 @@ if section == "Genel Dashboard":
         c5.metric("Kar Marji", f"%{margin:.1f}")
 
         st.markdown("#### En Cok Satan Urunler")
-        top_df = get_dashboard_top_products(conn, ym.strip())
+        top_df = get_dashboard_top_products(conn)
         if not top_df.empty:
             top_df["Adet"] = top_df["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
             st.dataframe(top_df, use_container_width=True, hide_index=True)
 
         st.markdown("#### Kategori Bazli Ciro / Kar")
-        cat_df = get_dashboard_categories(conn, ym.strip())
+        cat_df = get_dashboard_categories(conn)
         if not cat_df.empty:
             cat_df["Ciro"] = cat_df["Ciro"].map(tr_money)
             cat_df["Kar"] = cat_df["Kar"].map(tr_money)
