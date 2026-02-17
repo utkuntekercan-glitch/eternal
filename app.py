@@ -816,7 +816,7 @@ def render_header():
     if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
         st.image(APP_LOGO_URL, width=64)
     st.markdown(
-        "<h1 style='text-align:center; margin-bottom:0;'>Eternal Fire</h1>",
+        "<h1 style='text-align:center; margin-top:2cm; margin-bottom:0;'>Eternal Fire</h1>",
         unsafe_allow_html=True,
     )
     st.markdown(
