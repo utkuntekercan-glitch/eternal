@@ -249,6 +249,45 @@ def df_query(conn: DBConn, q: str, params=()):
     return pd.DataFrame(rows, columns=cols)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def get_top_stats_cached(_conn: DBConn) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT
+            COUNT(*) AS sale_rows,
+            COUNT(DISTINCT sku) AS sku_count,
+            MAX(order_date) AS last_order_date
+        FROM sales
+        """,
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_uploads_cached(_conn: DBConn) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT week_label, source_file, COUNT(*) AS row_count, MAX(id) AS max_id
+        FROM sales
+        GROUP BY week_label, source_file
+        ORDER BY max_id DESC
+        """,
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_products_cached(_conn: DBConn) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT sku, product_name, category, unit_cost, active
+        FROM products
+        ORDER BY product_name
+        """,
+    )
+
+
 def tr_money(x: float) -> str:
     s = format(float(x), ",.0f").replace(",", ".")
     return f"₺{s}"
@@ -379,7 +418,8 @@ def upsert_product_master(conn: DBConn, df: pd.DataFrame):
     conn.commit()
 
 
-def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
+@st.cache_data(ttl=60, show_spinner=False)
+def load_month_data(_conn: DBConn, ym: str) -> pd.DataFrame:
     start = f"{ym}-01"
     end_y, end_m = map(int, ym.split("-"))
     if end_m == 12:
@@ -388,7 +428,7 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
         end = f"{end_y:04d}-{end_m + 1:02d}-01"
 
     sales = df_query(
-        conn,
+        _conn,
         """
         SELECT week_label, order_date, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue
         FROM sales
@@ -401,7 +441,7 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
 
     # Keep free-exit rows for separate listing, but exclude from financial calculations.
     sales_calc = sales[sales["is_free_exit"].fillna(0).astype(int) == 0].copy()
-    products = df_query(conn, "SELECT sku, category, unit_cost, active FROM products")
+    products = df_query(_conn, "SELECT sku, category, unit_cost, active FROM products")
     merged = sales_calc.merge(products, on="sku", how="left")
     merged["category"] = merged["category"].fillna("Genel")
     merged["active"] = merged["active"].fillna(1)
@@ -411,6 +451,24 @@ def load_month_data(conn: DBConn, ym: str) -> pd.DataFrame:
     merged["margin_pct"] = merged["profit"] / merged["revenue"].replace(0, pd.NA) * 100
     merged["margin_pct"] = merged["margin_pct"].fillna(0.0)
     return merged
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start = f"{ym}-01"
+    y, m = map(int, ym.split("-"))
+    end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
+    return df_query(
+        _conn,
+        """
+        SELECT week_label, order_date, customer_email, sku, product_name, qty, unit_price, revenue
+        FROM sales
+        WHERE order_date >= ? AND order_date < ?
+          AND COALESCE(is_free_exit, 0) = 1
+        ORDER BY order_date, week_label
+        """,
+        (start, end),
+    )
 
 
 def render_brand_header():
@@ -438,18 +496,10 @@ if "_sales_bootstrap" not in st.session_state:
     pcount = int(pcount_df.iloc[0]["n"]) if not pcount_df.empty else 0
     if pcount == 0:
         sync_products_from_sales(conn)
+        st.cache_data.clear()
     st.session_state["_sales_bootstrap"] = True
 
-top_stats = df_query(
-    conn,
-    """
-    SELECT
-        COUNT(*) AS sale_rows,
-        COUNT(DISTINCT sku) AS sku_count,
-        MAX(order_date) AS last_order_date
-    FROM sales
-    """,
-)
+top_stats = get_top_stats_cached(conn)
 if not top_stats.empty:
     sale_rows = int(top_stats.iloc[0]["sale_rows"] or 0)
     sku_count = int(top_stats.iloc[0]["sku_count"] or 0)
@@ -508,15 +558,7 @@ if section == "Genel Dashboard":
 
 elif section == "Excel Yukle":
     st.subheader("Haftalik Excel Yukleme")
-    uploads = df_query(
-        conn,
-        """
-        SELECT week_label, source_file, COUNT(*) AS row_count, MAX(id) AS max_id
-        FROM sales
-        GROUP BY week_label, source_file
-        ORDER BY max_id DESC
-        """,
-    )
+    uploads = get_uploads_cached(conn)
     if not uploads.empty:
         last_week = str(uploads.iloc[0]["week_label"])
         last_file = str(uploads.iloc[0]["source_file"])
@@ -526,6 +568,7 @@ elif section == "Excel Yukle":
             with st.spinner("Siliniyor..."):
                 conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
                 conn.commit()
+                st.cache_data.clear()
             st.success(f"{last_week} haftasi verileri silindi.")
             st.rerun()
         week_opts = sorted(uploads["week_label"].astype(str).unique().tolist(), reverse=True)
@@ -534,6 +577,7 @@ elif section == "Excel Yukle":
             with st.spinner("Siliniyor..."):
                 conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
                 conn.commit()
+                st.cache_data.clear()
             st.success(f"{sel_week} haftasi verileri silindi.")
             st.rerun()
 
@@ -575,6 +619,7 @@ elif section == "Excel Yukle":
         )
         conn.commit()
         sync_products_from_sales(conn)
+        st.cache_data.clear()
         free_rows = int(parsed["is_free_exit"].sum()) if "is_free_exit" in parsed.columns else 0
         st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
 
@@ -582,20 +627,7 @@ elif section == "Aylik Rapor":
     st.subheader("Aylik Satis / Ciro / Kar")
     ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"))
     report = load_month_data(conn, ym.strip())
-    start = f"{ym.strip()}-01"
-    y, m = map(int, ym.strip().split("-"))
-    end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
-    free_exit_rows = df_query(
-        conn,
-        """
-        SELECT week_label, order_date, customer_email, sku, product_name, qty, unit_price, revenue
-        FROM sales
-        WHERE order_date >= ? AND order_date < ?
-          AND COALESCE(is_free_exit, 0) = 1
-        ORDER BY order_date, week_label
-        """,
-        (start, end),
-    )
+    free_exit_rows = load_free_exit_rows(conn, ym.strip())
     if report.empty:
         st.info("Bu ay icin veri yok.")
     else:
@@ -679,14 +711,7 @@ elif section == "Aylik Rapor":
 
 else:
     st.subheader("Urun Master (Kategori + Maliyet + Aktif)")
-    products = df_query(
-        conn,
-        """
-        SELECT sku, product_name, category, unit_cost, active
-        FROM products
-        ORDER BY product_name
-        """,
-    )
+    products = get_products_cached(conn)
     if products.empty:
         st.info("Once Excel yukleyin.")
     else:
@@ -709,4 +734,5 @@ else:
         )
         if st.button("Urun Master Kaydet", type="primary"):
             upsert_product_master(conn, edited[["sku", "product_name", "category", "unit_cost", "active"]])
+            st.cache_data.clear()
             st.success("Urun master kaydedildi.")
