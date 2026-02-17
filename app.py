@@ -233,6 +233,8 @@ def init_db(conn: DBConn):
         conn.execute("ALTER TABLE sales ADD COLUMN is_free_exit INTEGER NOT NULL DEFAULT 0")
     except Exception:
         conn.rollback()
+    # Keep old rows index-friendly for direct equality filters.
+    conn.execute("UPDATE sales SET is_free_exit=0 WHERE is_free_exit IS NULL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS costs (
@@ -270,6 +272,8 @@ def init_db(conn: DBConn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_week ON sales(week_label)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_is_free_exit ON sales(is_free_exit)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_free ON sales(order_date, is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_monthly_ym ON sales_monthly_sku(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_active ON products(active)")
     conn.commit()
@@ -295,7 +299,7 @@ def refresh_monthly_summary(conn: DBConn):
             SUM(revenue) AS revenue
         FROM sales
         WHERE order_date IS NOT NULL
-          AND COALESCE(is_free_exit, 0) = 0
+          AND is_free_exit = 0
         GROUP BY SUBSTR(order_date, 1, 7), sku
         """
     )
@@ -582,7 +586,7 @@ def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
         SELECT week_label, order_date, customer_email, sku, product_name, qty, unit_price, revenue
         FROM sales
         WHERE order_date >= ? AND order_date < ?
-          AND COALESCE(is_free_exit, 0) = 1
+          AND is_free_exit = 1
         ORDER BY order_date, week_label
         """,
         (start, end),
