@@ -3,6 +3,7 @@ import io
 import os
 import re
 import sqlite3
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -346,13 +347,26 @@ def normalize_header_text(s: str) -> str:
     return str(s or "").translate(tr_map).strip().lower()
 
 
+def normalize_text_safe(s: str) -> str:
+    txt = str(s or "").strip().lower()
+    # Fix common mojibake where utf-8 text is decoded as latin-1.
+    try:
+        txt = txt.encode("latin1").decode("utf-8")
+    except Exception:
+        pass
+    txt = txt.replace("ı", "i")
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    return txt
+
+
 def find_order_no_col(ws) -> int | None:
     try:
         header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
     except Exception:
         return None
     for i, v in enumerate(header_row):
-        h = normalize_header_text(v)
+        h = normalize_text_safe(v)
         if ("siparis" in h or "order" in h) and ("no" in h or "numara" in h):
             return i
     return None
@@ -378,7 +392,7 @@ def build_order_item_key(
 
 
 def is_paid_status(v) -> bool:
-    return normalize_header_text(v) == "odendi"
+    return normalize_text_safe(v) == "odendi"
 
 
 def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
