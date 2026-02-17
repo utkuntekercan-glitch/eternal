@@ -664,8 +664,6 @@ if not st.session_state["authenticated"]:
     st.stop()
 
 top_c1, top_c2 = st.columns([6, 1])
-with top_c1:
-    st.caption("Moduller: Dashboard, Excel yukleme, aylik rapor, urun maliyet yonetimi")
 with top_c2:
     if st.button("Cikis"):
         st.session_state["authenticated"] = False
