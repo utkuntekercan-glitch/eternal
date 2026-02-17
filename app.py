@@ -879,32 +879,15 @@ elif section == "Veri Ekle":
             st.success(f"{last_week} haftasi silindi.")
             st.rerun()
 
-        week_opts = sorted(uploads["week_label"].astype(str).unique().tolist(), reverse=True)
-        sel_week = st.selectbox("Silmek icin hafta sec", week_opts)
-        if st.button("Secili haftayi sil"):
-            with st.spinner("Siliniyor..."):
-                months_df = df_query(
-                    conn,
-                    "SELECT DISTINCT SUBSTR(order_date,1,7) AS ym FROM sales WHERE week_label=?",
-                    (sel_week,),
-                )
-                conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
-                conn.commit()
-                for m in months_df["ym"].dropna().astype(str).tolist():
-                    refresh_monthly_summary_for_month(conn, m)
-                st.cache_data.clear()
-            st.success(f"{sel_week} haftasi silindi.")
-            st.rerun()
-
-    week_label = st.text_input("Hafta etiketi (ornek: 2026-W07)")
+    auto_week_label = f"{datetime.today().isocalendar().year}-W{datetime.today().isocalendar().week:02d}"
     fallback_date = st.date_input("Bu dosya hangi aya yazilsin?", value=datetime.today())
     uploaded = st.file_uploader("Excel sec", type=["xlsx"])
-    if st.button("Yukle ve Isle", type="primary", disabled=uploaded is None or week_label.strip() == ""):
+    if st.button("Yukle ve Isle", type="primary", disabled=uploaded is None):
         with st.spinner("Excel isleniyor..."):
             bytes_ = uploaded.getvalue()
             source_hash = hashlib.sha256(bytes_).hexdigest()
             source_file = uploaded.name
-            parsed = parse_uploaded_excel(bytes_, week_label.strip(), fallback_date.isoformat())
+            parsed = parse_uploaded_excel(bytes_, auto_week_label, fallback_date.isoformat())
             if parsed.empty:
                 st.error("Islenecek satir bulunamadi.")
             else:
