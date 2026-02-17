@@ -1,5 +1,4 @@
 import hashlib
-import hashlib
 import io
 import os
 import re
@@ -186,6 +185,8 @@ def init_db(conn: DBConn):
             id {id_col},
             week_label TEXT NOT NULL,
             order_date TEXT NOT NULL,
+            order_no TEXT,
+            order_item_key TEXT,
             customer_email TEXT,
             is_free_exit INTEGER NOT NULL DEFAULT 0,
             sku TEXT NOT NULL,
@@ -198,26 +199,30 @@ def init_db(conn: DBConn):
         )
         """
     )
-    # Add new columns only when missing to avoid startup lock/contention patterns.
-    if conn.driver == "postgres":
-        col_df = df_query(
-            conn,
-            """
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema='public' AND table_name='sales' AND column_name='free_exit_note'
-            LIMIT 1
-            """,
-        )
-        if col_df.empty:
-            conn.execute("ALTER TABLE sales ADD COLUMN free_exit_note TEXT")
-    else:
-        col_df = df_query(conn, "PRAGMA table_info(sales)")
-        has_col = False
-        if not col_df.empty and "name" in col_df.columns:
-            has_col = bool((col_df["name"] == "free_exit_note").any())
-        if not has_col:
-            conn.execute("ALTER TABLE sales ADD COLUMN free_exit_note TEXT")
+    # Safe incremental migrations.
+    def ensure_sales_column(col_name: str, col_def: str):
+        if conn.driver == "postgres":
+            exists = df_query(
+                conn,
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='sales' AND column_name=?
+                LIMIT 1
+                """,
+                (col_name,),
+            )
+            if exists.empty:
+                conn.execute(f"ALTER TABLE sales ADD COLUMN {col_name} {col_def}")
+        else:
+            info = df_query(conn, "PRAGMA table_info(sales)")
+            has_col = bool((info["name"] == col_name).any()) if (not info.empty and "name" in info.columns) else False
+            if not has_col:
+                conn.execute(f"ALTER TABLE sales ADD COLUMN {col_name} {col_def}")
+
+    ensure_sales_column("free_exit_note", "TEXT")
+    ensure_sales_column("order_no", "TEXT")
+    ensure_sales_column("order_item_key", "TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS products (
@@ -256,6 +261,8 @@ def init_db(conn: DBConn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_free ON sales(is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_free ON sales(order_date, is_free_exit)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_no ON sales(order_no)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_sales_order_item_key ON sales(order_item_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_monthly_ym ON sales_monthly_sku(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_product_costs_sku ON product_costs(sku)")
     conn.commit()
@@ -265,7 +272,7 @@ def get_ready_conn() -> DBConn:
     if "_sales_conn" not in st.session_state:
         st.session_state["_sales_conn"] = get_conn()
     conn = st.session_state["_sales_conn"]
-    schema_key = f"{conn.driver}:clean-v1"
+    schema_key = f"{conn.driver}:clean-v2"
     if st.session_state.get("_sales_schema_ready") != schema_key:
         init_db(conn)
         st.session_state["_sales_schema_ready"] = schema_key
@@ -332,13 +339,43 @@ def normalize_excel_date(value, fallback_iso: str) -> str:
         return fallback_iso
 
 
+def normalize_header_text(s: str) -> str:
+    tr_map = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+    return str(s or "").translate(tr_map).strip().lower()
+
+
+def find_order_no_col(ws) -> int | None:
+    try:
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    except Exception:
+        return None
+    for i, v in enumerate(header_row):
+        h = normalize_header_text(v)
+        if ("siparis" in h or "order" in h) and ("no" in h or "numara" in h):
+            return i
+    return None
+
+
+def order_item_key(order_no: str, order_date: str, sku: str, qty: float, unit_price: float, customer_email: str) -> str:
+    base = f"{order_no}|{order_date}|{sku}|{qty:.6f}|{unit_price:.6f}|{customer_email}"
+    return hashlib.sha1(base.encode("utf-8")).hexdigest()
+
+
 def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     ws = wb.active
+    order_no_idx = find_order_no_col(ws)
     rows = []
     for r in ws.iter_rows(min_row=2):
+        raw_order_no = r[order_no_idx].value if order_no_idx is not None and order_no_idx < len(r) else None
+        if raw_order_no is None:
+            order_no = ""
+        elif isinstance(raw_order_no, float) and raw_order_no.is_integer():
+            order_no = str(int(raw_order_no))
+        else:
+            order_no = str(raw_order_no).strip()
         customer_email = "" if r[4].value is None else str(r[4].value).strip().lower()  # E
         order_date = normalize_excel_date(r[7].value, order_date_iso)  # H
         is_free_exit = 1 if customer_email == FREE_EXIT_EMAIL else 0
@@ -347,10 +384,13 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
         unit_price = normalize_num(r[20].value)  # U
         sku = "" if r[24].value is None else str(r[24].value).strip()  # Y
         if sku and product_name and qty > 0:
+            item_key = order_item_key(order_no, order_date, sku, float(qty), float(unit_price), customer_email)
             rows.append(
                 {
                     "week_label": week_label,
                     "order_date": order_date,
+                    "order_no": order_no,
+                    "order_item_key": item_key,
                     "customer_email": customer_email,
                     "is_free_exit": is_free_exit,
                     "sku": sku,
@@ -874,6 +914,8 @@ elif section == "Veri Ekle":
                     (
                         r["week_label"],
                         r["order_date"],
+                        r["order_no"],
+                        r["order_item_key"],
                         r["customer_email"],
                         int(r["is_free_exit"]),
                         r["sku"],
@@ -886,10 +928,14 @@ elif section == "Veri Ekle":
                     )
                     for _, r in parsed.iterrows()
                 ]
+                before_count = int(
+                    df_query(conn, "SELECT COUNT(*) AS n FROM sales WHERE source_hash=?", (source_hash,)).iloc[0]["n"]
+                )
                 conn.executemany(
                     """
-                    INSERT INTO sales(week_label, order_date, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue, source_file, source_hash)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO sales(week_label, order_date, order_no, order_item_key, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue, source_file, source_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(order_item_key) DO NOTHING
                     """,
                     rows,
                 )
@@ -908,7 +954,14 @@ elif section == "Veri Ekle":
                         refresh_monthly_summary_for_month(conn, ym)
                 st.cache_data.clear()
                 free_rows = int(parsed["is_free_exit"].sum())
-                st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
+                after_count = int(
+                    df_query(conn, "SELECT COUNT(*) AS n FROM sales WHERE source_hash=?", (source_hash,)).iloc[0]["n"]
+                )
+                inserted_rows = max(0, after_count - before_count)
+                skipped_rows = max(0, len(rows) - inserted_rows)
+                st.success(
+                    f"Yukleme tamamlandi. Eklenen: {inserted_rows} | Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows}"
+                )
 
 elif section == "Aylik Rapor":
     conn = get_ready_conn()
