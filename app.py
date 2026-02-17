@@ -368,17 +368,17 @@ with tab1:
         last_rows = int(uploads.iloc[0]["row_count"])
         st.caption(f"Son yukleme: {last_week} | {last_file} | {last_rows} satir")
         if st.button("Son yuklemeyi sil", type="secondary"):
-            conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
-            conn.commit()
-            sync_products_from_sales(conn)
+            with st.spinner("Siliniyor..."):
+                conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
+                conn.commit()
             st.success(f"{last_week} haftasi verileri silindi.")
             st.rerun()
         week_opts = sorted(uploads["week_label"].astype(str).unique().tolist(), reverse=True)
         sel_week = st.selectbox("Silmek icin hafta sec", week_opts, key="delete_week_select")
         if st.button("Secili haftayi sil"):
-            conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
-            conn.commit()
-            sync_products_from_sales(conn)
+            with st.spinner("Siliniyor..."):
+                conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
+                conn.commit()
             st.success(f"{sel_week} haftasi verileri silindi.")
             st.rerun()
 
