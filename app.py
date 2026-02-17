@@ -16,6 +16,13 @@ try:
 except Exception:
     psycopg2 = None
 
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+except Exception:
+    A4 = None
+    canvas = None
+
 
 st.set_page_config(page_title="Eternal Fire", layout="wide")
 
@@ -821,6 +828,74 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
     )
 
 
+def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFrame, prod_df: pd.DataFrame) -> bytes | None:
+    if canvas is None or A4 is None:
+        return None
+
+    total_qty = float(totals_df.iloc[0]["total_qty"] or 0) if not totals_df.empty else 0.0
+    total_rev = float(order_total_df.iloc[0]["total_order_revenue"] or 0) if not order_total_df.empty else 0.0
+    total_cost = float(totals_df.iloc[0]["total_cost"] or 0) if not totals_df.empty else 0.0
+    total_profit = total_rev - total_cost
+
+    out = io.BytesIO()
+    pdf = canvas.Canvas(out, pagesize=A4)
+    w, h = A4
+
+    def draw_header(page_no: int):
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(40, h - 40, f"Eternal Fire Aylik Rapor - {ym}")
+        pdf.setFont("Helvetica", 9)
+        pdf.drawString(40, h - 56, f"Uretim Tarihi: {datetime.now(ZoneInfo('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}")
+        pdf.drawRightString(w - 40, h - 56, f"Sayfa {page_no}")
+        pdf.setFont("Helvetica", 10)
+        pdf.drawString(40, h - 80, f"Toplam Adet: {format(total_qty, ',.0f').replace(',', '.')}")
+        pdf.drawString(200, h - 80, f"Toplam Ciro: TL {format(total_rev, ',.2f').replace(',', '.')}")
+        pdf.drawString(380, h - 80, f"Toplam Maliyet: TL {format(total_cost, ',.2f').replace(',', '.')}")
+        pdf.drawString(40, h - 96, f"Net Kar: TL {format(total_profit, ',.2f').replace(',', '.')}")
+        pdf.setFont("Helvetica-Bold", 9)
+        pdf.drawString(40, h - 120, "SKU")
+        pdf.drawString(125, h - 120, "Urun")
+        pdf.drawRightString(355, h - 120, "Adet")
+        pdf.drawRightString(440, h - 120, "Ciro")
+        pdf.drawRightString(520, h - 120, "Maliyet")
+        pdf.drawRightString(w - 40, h - 120, "Kar")
+        pdf.line(40, h - 124, w - 40, h - 124)
+
+    page_no = 1
+    draw_header(page_no)
+    y = h - 140
+    pdf.setFont("Helvetica", 8)
+
+    if prod_df.empty:
+        pdf.drawString(40, y, "Bu ay icin veri yok.")
+    else:
+        for _, r in prod_df.iterrows():
+            if y < 50:
+                pdf.showPage()
+                page_no += 1
+                draw_header(page_no)
+                y = h - 140
+                pdf.setFont("Helvetica", 8)
+            sku = str(r.get("Stok Kodu", "") or "")
+            name = str(r.get("Urun", "") or "")
+            if len(name) > 44:
+                name = name[:41] + "..."
+            adet = float(r.get("Adet", 0) or 0)
+            ciro = float(r.get("Ciro", 0) or 0)
+            maliyet = float(r.get("Maliyet", 0) or 0)
+            kar = float(r.get("Kar", 0) or 0)
+            pdf.drawString(40, y, sku[:15])
+            pdf.drawString(125, y, name)
+            pdf.drawRightString(355, y, format(adet, ",.0f").replace(",", "."))
+            pdf.drawRightString(440, y, format(ciro, ",.2f").replace(",", "."))
+            pdf.drawRightString(520, y, format(maliyet, ",.2f").replace(",", "."))
+            pdf.drawRightString(w - 40, y, format(kar, ",.2f").replace(",", "."))
+            y -= 14
+
+    pdf.save()
+    return out.getvalue()
+
+
 def render_header():
     now_txt = datetime.now(ZoneInfo("Europe/Istanbul")).strftime("%d.%m.%Y %H:%M")
     if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
@@ -872,12 +947,32 @@ section = st.radio("Bolum", sections, horizontal=True, label_visibility="collaps
 
 if section == "Dashboard":
     conn = get_ready_conn()
-    if st.button("Ozeti Yenile", type="secondary"):
-        with st.spinner("Ozet yenileniyor..."):
-            refresh_monthly_summary_all(conn)
-            st.cache_data.clear()
-        st.success("Dashboard ozeti yenilendi.")
-        st.rerun()
+    a1, a2, a3 = st.columns([1, 1, 2])
+    with a1:
+        if st.button("Ozeti Yenile", type="secondary"):
+            with st.spinner("Ozet yenileniyor..."):
+                refresh_monthly_summary_all(conn)
+                st.cache_data.clear()
+            st.success("Dashboard ozeti yenilendi.")
+            st.rerun()
+    with a2:
+        pdf_ym = st.text_input("PDF Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_pdf_ym")
+    with a3:
+        pdf_disabled = (canvas is None) or (not is_valid_ym(pdf_ym))
+        if canvas is None:
+            st.caption("PDF icin reportlab gerekli.")
+        else:
+            pdf_prod_df = get_month_products(conn, pdf_ym.strip()) if is_valid_ym(pdf_ym) else pd.DataFrame()
+            pdf_totals_df = get_month_totals(conn, pdf_ym.strip()) if is_valid_ym(pdf_ym) else pd.DataFrame()
+            pdf_order_total_df = get_month_order_total(conn, pdf_ym.strip()) if is_valid_ym(pdf_ym) else pd.DataFrame()
+            pdf_bytes = build_month_pdf(pdf_ym.strip(), pdf_totals_df, pdf_order_total_df, pdf_prod_df) if is_valid_ym(pdf_ym) else None
+            st.download_button(
+                "Aylik PDF Rapor",
+                data=pdf_bytes or b"",
+                file_name=f"eternal-fire-aylik-rapor-{pdf_ym.strip()}.pdf",
+                mime="application/pdf",
+                disabled=pdf_disabled or (pdf_bytes is None),
+            )
 
     metrics = get_dashboard_metrics(conn)
     order_total_df = get_dashboard_order_total(conn)
