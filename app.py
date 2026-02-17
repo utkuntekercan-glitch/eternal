@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -327,7 +328,7 @@ def refresh_monthly_summary_for_month(conn: DBConn, ym: str):
     conn.commit()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_uploads_cached(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -340,7 +341,7 @@ def get_uploads_cached(_conn: DBConn) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_products_cached(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -362,6 +363,10 @@ def month_bounds(ym: str):
     y, m = map(int, ym.split("-"))
     end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
     return start, end
+
+
+def is_valid_ym(ym: str) -> bool:
+    return bool(re.fullmatch(r"\d{4}-\d{2}", ym.strip()))
 
 
 def normalize_num(x) -> float:
@@ -449,6 +454,27 @@ def sync_products_from_sales(conn: DBConn):
     conn.commit()
 
 
+def upsert_products_from_rows(conn: DBConn, rows_df: pd.DataFrame):
+    if rows_df.empty:
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    uniq = rows_df[["sku", "product_name"]].dropna().drop_duplicates()
+    payload = [(str(r["sku"]), str(r["product_name"]), now) for _, r in uniq.iterrows()]
+    if not payload:
+        return
+    conn.executemany(
+        """
+        INSERT INTO products(sku, product_name, updated_at)
+        VALUES(?,?,?)
+        ON CONFLICT(sku) DO UPDATE SET
+            product_name=excluded.product_name,
+            updated_at=excluded.updated_at
+        """,
+        payload,
+    )
+    conn.commit()
+
+
 def upsert_product_master(conn: DBConn, df: pd.DataFrame):
     now = datetime.now().isoformat(timespec="seconds")
     rows = []
@@ -491,7 +517,7 @@ def upsert_product_master(conn: DBConn, df: pd.DataFrame):
     conn.commit()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_month_data(_conn: DBConn, ym: str) -> pd.DataFrame:
     start = f"{ym}-01"
     end_y, end_m = map(int, ym.split("-"))
@@ -526,7 +552,7 @@ def load_month_data(_conn: DBConn, ym: str) -> pd.DataFrame:
     return merged
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_month_summary(_conn: DBConn, ym: str) -> pd.DataFrame:
     base = df_query(
         _conn,
@@ -551,7 +577,7 @@ def load_month_summary(_conn: DBConn, ym: str) -> pd.DataFrame:
     return merged
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -569,7 +595,7 @@ def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_top_qty(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -584,7 +610,7 @@ def get_dashboard_top_qty(_conn: DBConn, ym: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_by_category(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -603,9 +629,8 @@ def get_dashboard_by_category(_conn: DBConn, ym: str) -> pd.DataFrame:
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_month_report_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -614,18 +639,16 @@ def get_month_report_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
             COALESCE(SUM(s.revenue), 0) AS total_revenue,
             COALESCE(SUM(s.qty * COALESCE(p.unit_cost, 0)), 0) AS total_cost,
             COALESCE(SUM(s.revenue - (s.qty * COALESCE(p.unit_cost, 0))), 0) AS total_profit
-        FROM sales s
+        FROM sales_monthly_sku s
         LEFT JOIN products p ON p.sku = s.sku
-        WHERE s.order_date >= ? AND s.order_date < ?
-          AND COALESCE(s.is_free_exit, 0) = 0
+        WHERE s.ym = ?
         """,
-        (start, end),
+        (ym,),
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_month_report_products(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -636,18 +659,17 @@ def get_month_report_products(_conn: DBConn, ym: str) -> pd.DataFrame:
             COALESCE(SUM(s.revenue), 0) AS "Ciro",
             COALESCE(SUM(s.qty * COALESCE(p.unit_cost, 0)), 0) AS "Maliyet",
             COALESCE(SUM(s.revenue - (s.qty * COALESCE(p.unit_cost, 0))), 0) AS "Kar"
-        FROM sales s
+        FROM sales_monthly_sku s
         LEFT JOIN products p ON p.sku = s.sku
-        WHERE s.order_date >= ? AND s.order_date < ?
-          AND COALESCE(s.is_free_exit, 0) = 0
+        WHERE s.ym = ?
         GROUP BY s.sku
         ORDER BY "Ciro" DESC
         """,
-        (start, end),
+        (ym,),
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_month_report_sku_details(_conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
     start, end = month_bounds(ym)
     return df_query(
@@ -671,7 +693,7 @@ def get_month_report_sku_details(_conn: DBConn, ym: str, sku: str) -> pd.DataFra
     )
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
     start, end = month_bounds(ym)
     return df_query(
@@ -721,6 +743,9 @@ elif section == "Genel Dashboard":
     conn = get_ready_conn()
     st.subheader("Genel Satis Ozeti")
     dash_ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
+    if not is_valid_ym(dash_ym):
+        st.warning("Ay formati gecersiz. Ornek: 2026-02")
+        st.stop()
     if "_dash_loaded" not in st.session_state:
         st.session_state["_dash_loaded"] = False
     if "_dash_last_ym" not in st.session_state:
@@ -743,7 +768,6 @@ elif section == "Genel Dashboard":
         st.info("Bu ay icin ozet veri yok.")
         if st.button("Aylik ozeti olustur/yenile", type="secondary"):
             with st.spinner("Ozet hazirlaniyor..."):
-                sync_products_from_sales(conn)
                 refresh_monthly_summary_for_month(conn, dash_ym.strip())
                 st.cache_data.clear()
             st.success("Aylik ozet yenilendi.")
@@ -776,6 +800,13 @@ elif section == "Genel Dashboard":
 elif section == "Excel Yukle":
     conn = get_ready_conn()
     st.subheader("Haftalik Excel Yukleme")
+    if st.button("Tum aylik ozetleri yeniden olustur", type="secondary"):
+        with st.spinner("Tum ozetler yeniden hazirlaniyor..."):
+            refresh_monthly_summary(conn)
+            st.cache_data.clear()
+        st.success("Tum aylik ozetler yenilendi.")
+        st.rerun()
+
     uploads = get_uploads_cached(conn)
     if not uploads.empty:
         last_week = str(uploads.iloc[0]["week_label"])
@@ -850,7 +881,7 @@ elif section == "Excel Yukle":
             rows,
         )
         conn.commit()
-        sync_products_from_sales(conn)
+        upsert_products_from_rows(conn, parsed[["sku", "product_name"]])
         refresh_monthly_summary_for_month(conn, fallback_date.strftime("%Y-%m"))
         st.cache_data.clear()
         free_rows = int(parsed["is_free_exit"].sum()) if "is_free_exit" in parsed.columns else 0
@@ -860,6 +891,9 @@ elif section == "Aylik Rapor":
     conn = get_ready_conn()
     st.subheader("Aylik Satis / Ciro / Kar")
     ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"))
+    if not is_valid_ym(ym):
+        st.warning("Ay formati gecersiz. Ornek: 2026-02")
+        st.stop()
     report_totals = get_month_report_totals(conn, ym.strip())
     report_products = get_month_report_products(conn, ym.strip())
     free_exit_rows = load_free_exit_rows(conn, ym.strip())
@@ -898,6 +932,11 @@ elif section == "Aylik Rapor":
     if free_exit_rows.empty:
         st.info("Bu ay bedelsiz cikis yok.")
     else:
+        free_qty = float(free_exit_rows["qty"].sum())
+        free_rev = float(free_exit_rows["revenue"].sum())
+        f1, f2 = st.columns(2)
+        f1.metric("Bedelsiz Toplam Adet", f"{free_qty:,.0f}".replace(",", "."))
+        f2.metric("Bedelsiz Toplam Tutar", tr_money(free_rev))
         free_disp = free_exit_rows.rename(
             columns={
                 "week_label": "Hafta",
