@@ -372,6 +372,7 @@ def normalize_text_safe(s: str) -> str:
         txt = txt.encode("latin1").decode("utf-8")
     except Exception:
         pass
+    txt = txt.replace("þ", "s").replace("ð", "g")
     txt = txt.replace("ı", "i")
     txt = unicodedata.normalize("NFKD", txt)
     txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
@@ -584,15 +585,14 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT COALESCE(SUM(order_total_final), 0) AS total_order_revenue
-        FROM (
-            SELECT
-                COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT)) AS order_key,
-                SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
-            FROM sales
-            WHERE COALESCE(is_free_exit, 0) = 0
-            GROUP BY COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT))
-        ) t
+        SELECT
+            COALESCE(
+                NULLIF(SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END), 0),
+                SUM(revenue),
+                0
+            ) AS total_order_revenue
+        FROM sales
+        WHERE COALESCE(is_free_exit, 0) = 0
         """,
     )
 
@@ -705,16 +705,15 @@ def get_month_order_total(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT COALESCE(SUM(order_total_final), 0) AS total_order_revenue
-        FROM (
-            SELECT
-                COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT)) AS order_key,
-                SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
-            FROM sales
-            WHERE order_date >= ? AND order_date < ?
-              AND COALESCE(is_free_exit, 0) = 0
-            GROUP BY COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT))
-        ) t
+        SELECT
+            COALESCE(
+                NULLIF(SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END), 0),
+                SUM(revenue),
+                0
+            ) AS total_order_revenue
+        FROM sales
+        WHERE order_date >= ? AND order_date < ?
+          AND COALESCE(is_free_exit, 0) = 0
         """,
         (start, end),
     )
