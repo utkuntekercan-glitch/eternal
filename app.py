@@ -1013,7 +1013,20 @@ elif section == "Veri Ekle":
                     """
                     INSERT INTO sales(week_label, order_date, order_no, order_item_key, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue, order_total, source_file, source_hash)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(order_item_key) DO NOTHING
+                    ON CONFLICT(order_item_key) DO UPDATE SET
+                        week_label=excluded.week_label,
+                        order_date=excluded.order_date,
+                        order_no=excluded.order_no,
+                        customer_email=excluded.customer_email,
+                        is_free_exit=excluded.is_free_exit,
+                        sku=excluded.sku,
+                        product_name=excluded.product_name,
+                        qty=excluded.qty,
+                        unit_price=excluded.unit_price,
+                        revenue=excluded.revenue,
+                        order_total=excluded.order_total,
+                        source_file=excluded.source_file,
+                        source_hash=excluded.source_hash
                     """,
                     rows,
                 )
