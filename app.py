@@ -880,14 +880,13 @@ elif section == "Veri Ekle":
             st.rerun()
 
     auto_week_label = f"{datetime.today().isocalendar().year}-W{datetime.today().isocalendar().week:02d}"
-    fallback_date = st.date_input("Bu dosya hangi aya yazilsin?", value=datetime.today())
     uploaded = st.file_uploader("Excel sec", type=["xlsx"])
     if st.button("Yukle ve Isle", type="primary", disabled=uploaded is None):
         with st.spinner("Excel isleniyor..."):
             bytes_ = uploaded.getvalue()
             source_hash = hashlib.sha256(bytes_).hexdigest()
             source_file = uploaded.name
-            parsed = parse_uploaded_excel(bytes_, auto_week_label, fallback_date.isoformat())
+            parsed = parse_uploaded_excel(bytes_, auto_week_label, datetime.today().date().isoformat())
             if parsed.empty:
                 st.error("Islenecek satir bulunamadi.")
             else:
