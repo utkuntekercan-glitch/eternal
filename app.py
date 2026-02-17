@@ -1359,13 +1359,20 @@ elif section == "Veri Ekle":
 
 elif section == "Aylik Rapor":
     conn = get_ready_conn()
-    month_date = st.date_input(
-        "Ay Sec",
-        value=datetime.today().date(),
-        key="month_pick_date",
-        format="DD.MM.YYYY",
+    month_options_df = df_query(
+        conn,
+        """
+        SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
+        FROM sales
+        WHERE COALESCE(is_free_exit, 0) = 0
+        ORDER BY ym DESC
+        """,
     )
-    ym = month_date.strftime("%Y-%m")
+    month_options = month_options_df["ym"].dropna().astype(str).tolist() if not month_options_df.empty else []
+    current_ym = datetime.today().strftime("%Y-%m")
+    if current_ym not in month_options:
+        month_options = [current_ym] + month_options
+    ym = st.selectbox("Ay Sec", month_options, key="month_ym_select")
 
     prod_df = get_month_products(conn, ym.strip())
     totals_df = get_month_totals(conn, ym.strip())
