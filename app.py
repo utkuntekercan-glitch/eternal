@@ -369,6 +369,9 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     order_no_idx = find_order_no_col(ws)
     rows = []
     for r in ws.iter_rows(min_row=2):
+        pay_status = "" if r[6].value is None else str(r[6].value).strip().lower()  # G
+        if pay_status != "ödendi" and pay_status != "odendi":
+            continue
         raw_order_no = r[order_no_idx].value if order_no_idx is not None and order_no_idx < len(r) else None
         if raw_order_no is None:
             order_no = ""
