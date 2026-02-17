@@ -130,6 +130,18 @@ def inject_styles():
         .stButton > button {
             border-radius: 10px;
             border: 1px solid rgba(248,210,106,0.45);
+            background: linear-gradient(180deg, rgba(191,34,40,0.95), rgba(140,24,30,0.95));
+            color: #ffffff !important;
+            font-weight: 700;
+        }
+        .stButton > button:hover {
+            border: 1px solid rgba(248,210,106,0.75);
+            background: linear-gradient(180deg, rgba(215,48,54,1), rgba(161,30,36,1));
+            color: #ffffff !important;
+        }
+        .stButton > button:focus {
+            color: #ffffff !important;
+            box-shadow: 0 0 0 0.2rem rgba(248,210,106,0.25);
         }
         </style>
         """,
