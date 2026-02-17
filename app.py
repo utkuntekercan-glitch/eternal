@@ -25,10 +25,8 @@ def inject_styles():
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap');
-
         html, body, [class*="css"]  {
-            font-family: 'Manrope', sans-serif;
+            font-family: 'Segoe UI', Tahoma, sans-serif;
         }
         .stApp {
             background:
@@ -183,16 +181,22 @@ def get_conn() -> DBConn:
     if USE_POSTGRES:
         if psycopg2 is None:
             raise RuntimeError("Postgres icin psycopg2-binary gerekli.")
+        conn_kwargs = {
+            "connect_timeout": 8,
+            "application_name": "eternal-streamlit",
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        }
         if "sslmode=" in DATABASE_URL:
-            raw = psycopg2.connect(DATABASE_URL, connect_timeout=8, application_name="eternal-streamlit")
+            raw = psycopg2.connect(DATABASE_URL, **conn_kwargs)
         else:
-            raw = psycopg2.connect(
-                DATABASE_URL,
-                sslmode="require",
-                connect_timeout=8,
-                application_name="eternal-streamlit",
-            )
+            raw = psycopg2.connect(DATABASE_URL, sslmode="require", **conn_kwargs)
         raw.autocommit = False
+        cur = raw.cursor()
+        cur.execute("SET statement_timeout TO 12000")
+        cur.close()
         return DBConn("postgres", raw)
 
     raw = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -516,6 +520,58 @@ def load_month_summary(_conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT
+            COALESCE(SUM(s.qty), 0) AS total_qty,
+            COALESCE(SUM(s.revenue), 0) AS total_revenue,
+            COALESCE(SUM(s.qty * COALESCE(p.unit_cost, 0)), 0) AS total_cost,
+            COALESCE(SUM(s.revenue - (s.qty * COALESCE(p.unit_cost, 0))), 0) AS total_profit
+        FROM sales_monthly_sku s
+        LEFT JOIN products p ON p.sku = s.sku
+        WHERE s.ym = ?
+        """,
+        (ym,),
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_dashboard_top_qty(_conn: DBConn, ym: str) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT sku AS "Stok Kodu", product_name AS "Urun", qty AS "Adet"
+        FROM sales_monthly_sku
+        WHERE ym = ?
+        ORDER BY qty DESC
+        LIMIT 10
+        """,
+        (ym,),
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_dashboard_by_category(_conn: DBConn, ym: str) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT
+            COALESCE(p.category, 'Genel') AS "Kategori",
+            COALESCE(SUM(s.revenue), 0) AS "Ciro",
+            COALESCE(SUM(s.revenue - (s.qty * COALESCE(p.unit_cost, 0))), 0) AS "Kar"
+        FROM sales_monthly_sku s
+        LEFT JOIN products p ON p.sku = s.sku
+        WHERE s.ym = ?
+        GROUP BY COALESCE(p.category, 'Genel')
+        ORDER BY "Ciro" DESC
+        """,
+        (ym,),
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
     start = f"{ym}-01"
     y, m = map(int, ym.split("-"))
@@ -589,14 +645,14 @@ if section == "Genel Dashboard":
             st.info("Hizli acilis icin dashboard verisi butonla yuklenir.")
             st.stop()
 
-    dash = load_month_summary(conn, dash_ym.strip())
-    if dash.empty:
+    metrics = get_dashboard_metrics(conn, dash_ym.strip())
+    if metrics.empty or float(metrics.iloc[0]["total_revenue"] or 0) <= 0:
         st.info("Bu ay icin veri yok.")
     else:
-        d_qty = float(dash["qty"].sum())
-        d_rev = float(dash["revenue"].sum())
-        d_cost = float(dash["cost_total"].sum())
-        d_profit = float(dash["profit"].sum())
+        d_qty = float(metrics.iloc[0]["total_qty"] or 0)
+        d_rev = float(metrics.iloc[0]["total_revenue"] or 0)
+        d_cost = float(metrics.iloc[0]["total_cost"] or 0)
+        d_profit = float(metrics.iloc[0]["total_profit"] or 0)
         d_margin = (d_profit / d_rev * 100.0) if d_rev > 0 else 0.0
 
         a, b, c, d, e = st.columns(5)
@@ -607,23 +663,12 @@ if section == "Genel Dashboard":
         e.metric("Kar Marji", f"%{d_margin:.1f}")
 
         st.markdown("#### En Cok Satan Urunler (Adet)")
-        by_qty = (
-            dash.groupby(["sku", "product_name"], as_index=False)["qty"]
-            .sum()
-            .sort_values("qty", ascending=False)
-            .head(10)
-        )
-        by_qty.rename(columns={"sku": "Stok Kodu", "product_name": "Urun", "qty": "Adet"}, inplace=True)
+        by_qty = get_dashboard_top_qty(conn, dash_ym.strip())
         by_qty["Adet"] = by_qty["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
         st.dataframe(by_qty, use_container_width=True, hide_index=True)
 
         st.markdown("#### Kategori Bazli Ciro / Kar")
-        by_cat = (
-            dash.groupby("category", as_index=False)[["revenue", "profit"]]
-            .sum()
-            .sort_values("revenue", ascending=False)
-        )
-        by_cat.rename(columns={"category": "Kategori", "revenue": "Ciro", "profit": "Kar"}, inplace=True)
+        by_cat = get_dashboard_by_category(conn, dash_ym.strip())
         by_cat["Ciro"] = by_cat["Ciro"].map(tr_money)
         by_cat["Kar"] = by_cat["Kar"].map(tr_money)
         st.dataframe(by_cat, use_container_width=True, hide_index=True)
