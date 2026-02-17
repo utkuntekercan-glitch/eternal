@@ -347,6 +347,10 @@ def get_ready_conn() -> DBConn:
     if st.session_state.get("_sales_schema_ready") != schema_key:
         init_db(conn)
         st.session_state["_sales_schema_ready"] = schema_key
+    if not st.session_state.get("_sales_dedupe_done"):
+        dedupe_sales_by_order(conn)
+        refresh_monthly_summary_all(conn)
+        st.session_state["_sales_dedupe_done"] = True
     return conn
 
 
@@ -595,6 +599,41 @@ def refresh_monthly_summary_all(conn: DBConn):
         FROM sales
         WHERE COALESCE(is_free_exit, 0) = 0
         GROUP BY SUBSTR(order_date, 1, 7), sku
+        """
+    )
+    conn.commit()
+
+
+def dedupe_sales_by_order(conn: DBConn):
+    conn.execute(
+        """
+        DELETE FROM sales
+        WHERE id IN (
+            SELECT s1.id
+            FROM sales s1
+            JOIN (
+                SELECT
+                    order_no,
+                    sku,
+                    qty,
+                    unit_price,
+                    customer_email,
+                    is_free_exit,
+                    MAX(id) AS keep_id,
+                    COUNT(*) AS c
+                FROM sales
+                WHERE COALESCE(order_no, '') <> ''
+                GROUP BY order_no, sku, qty, unit_price, customer_email, is_free_exit
+                HAVING COUNT(*) > 1
+            ) d
+              ON s1.order_no = d.order_no
+             AND s1.sku = d.sku
+             AND s1.qty = d.qty
+             AND s1.unit_price = d.unit_price
+             AND COALESCE(s1.customer_email, '') = COALESCE(d.customer_email, '')
+             AND COALESCE(s1.is_free_exit, 0) = COALESCE(d.is_free_exit, 0)
+            WHERE s1.id <> d.keep_id
+        )
         """
     )
     conn.commit()
@@ -1134,9 +1173,8 @@ if section == "Dashboard":
                     """,
                 )
                 month_options = month_options_df["ym"].dropna().astype(str).tolist() if not month_options_df.empty else []
-                default_ym = datetime.today().strftime("%Y-%m")
-                if default_ym not in month_options:
-                    month_options = [default_ym] + month_options
+                if not month_options:
+                    month_options = [datetime.today().strftime("%Y-%m")]
                 pdf_ym = st.selectbox("Ay Sec", month_options, key="dash_pdf_ym_select")
                 pdf_prod_df = get_month_products(conn, pdf_ym.strip())
                 pdf_totals_df = get_month_totals(conn, pdf_ym.strip())
@@ -1317,6 +1355,21 @@ elif section == "Veri Ekle":
                     )
                     for _, r in parsed.iterrows()
                 ]
+                # One-shot cleanup for previously mis-dated imports:
+                # remove rows with same order numbers before re-inserting corrected data.
+                order_nos = (
+                    parsed["order_no"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
+                order_nos = sorted({x for x in order_nos.tolist() if x})
+                if order_nos:
+                    conn.executemany("DELETE FROM sales WHERE order_no=?", [(x,) for x in order_nos])
+
+                # Also replace old rows from same exact file hash.
+                conn.execute("DELETE FROM sales WHERE source_hash=?", (source_hash,))
+                conn.commit()
                 before_count = int(
                     df_query(conn, "SELECT COUNT(*) AS n FROM sales WHERE source_hash=?", (source_hash,)).iloc[0]["n"]
                 )
@@ -1373,9 +1426,8 @@ elif section == "Aylik Rapor":
         """,
     )
     month_options = month_options_df["ym"].dropna().astype(str).tolist() if not month_options_df.empty else []
-    current_ym = datetime.today().strftime("%Y-%m")
-    if current_ym not in month_options:
-        month_options = [current_ym] + month_options
+    if not month_options:
+        month_options = [datetime.today().strftime("%Y-%m")]
     ym = st.selectbox("Ay Sec", month_options, key="month_ym_select")
 
     prod_df = get_month_products(conn, ym.strip())
