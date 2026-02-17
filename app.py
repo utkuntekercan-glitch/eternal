@@ -392,7 +392,8 @@ def build_order_item_key(
 
 
 def is_paid_status(v) -> bool:
-    return normalize_text_safe(v) == "odendi"
+    t = normalize_text_safe(v).replace("þ", "s").replace("ð", "g")
+    return t == "odendi" or "odendi" in t
 
 
 def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
