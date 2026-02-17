@@ -915,9 +915,11 @@ def render_header():
 
 def render_login():
     st.subheader("Giris")
-    user = st.text_input("Kullanici Adi", key="login_user")
-    password = st.text_input("Parola", type="password", key="login_pass")
-    if st.button("Giris Yap", type="primary"):
+    with st.form("login_form", clear_on_submit=False):
+        user = st.text_input("Kullanici Adi", key="login_user")
+        password = st.text_input("Parola", type="password", key="login_pass")
+        submitted = st.form_submit_button("Giris Yap", type="primary")
+    if submitted:
         if user.strip() == APP_USER and password == APP_PASSWORD:
             st.session_state["authenticated"] = True
             st.success("Giris basarili.")
