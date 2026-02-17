@@ -1,4 +1,5 @@
 import hashlib
+import hashlib
 import io
 import os
 import re
@@ -196,6 +197,10 @@ def init_db(conn: DBConn):
         )
         """
     )
+    try:
+        conn.execute("ALTER TABLE sales ADD COLUMN free_exit_note TEXT")
+    except Exception:
+        conn.rollback()
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS products (
@@ -605,6 +610,32 @@ def get_month_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_free_exit_manage_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
+    return df_query(
+        _conn,
+        """
+        SELECT
+            id AS "ID",
+            order_date AS "Tarih",
+            week_label AS "Hafta",
+            customer_email AS "E-Posta",
+            sku AS "Stok Kodu",
+            product_name AS "Urun",
+            qty AS "Adet",
+            unit_price AS "Birim Fiyat",
+            revenue AS "Bedelsiz Tutar",
+            COALESCE(free_exit_note, '') AS "Aciklama"
+        FROM sales
+        WHERE order_date >= ? AND order_date < ?
+          AND COALESCE(is_free_exit, 0) = 1
+        ORDER BY order_date DESC, id DESC
+        """,
+        (start, end),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_products_master(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -669,7 +700,7 @@ with top_c2:
         st.session_state["authenticated"] = False
         st.rerun()
 
-sections = ["Genel Dashboard", "Veri Ekle", "Aylik Rapor", "Urunler"]
+sections = ["Genel Dashboard", "Veri Ekle", "Aylik Rapor", "Bedelsiz Cikislar", "Urunler"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
 if section == "Genel Dashboard":
@@ -872,7 +903,6 @@ elif section == "Aylik Rapor":
 
     prod_df = get_month_products(conn, ym.strip())
     totals_df = get_month_totals(conn, ym.strip())
-    free_df = get_month_free_exit_rows(conn, ym.strip())
 
     if prod_df.empty:
         st.info("Bu ay icin veri yok.")
@@ -903,20 +933,55 @@ elif section == "Aylik Rapor":
             sku_df["Ciro"] = sku_df["Ciro"].map(tr_money)
             st.dataframe(sku_df, use_container_width=True, hide_index=True)
 
-    st.markdown("#### Bedelsiz Cikislar")
+elif section == "Bedelsiz Cikislar":
+    conn = get_ready_conn()
+    ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="free_ym")
+    if not is_valid_ym(ym):
+        st.warning("Ay formati gecersiz. Ornek: 2026-02")
+        st.stop()
+
+    free_df = get_free_exit_manage_rows(conn, ym.strip())
     if free_df.empty:
         st.info("Bu ay bedelsiz cikis yok.")
     else:
         fq = float(free_df["Adet"].sum())
         fr = float(free_df["Bedelsiz Tutar"].sum())
-        f1, f2 = st.columns(2)
-        f1.metric("Bedelsiz Toplam Adet", f"{fq:,.0f}".replace(",", "."))
-        f2.metric("Bedelsiz Toplam Tutar", tr_money(fr))
-        fd = free_df.copy()
-        fd["Adet"] = fd["Adet"].map(lambda v: f"{float(v):,.0f}".replace(",", "."))
-        fd["Birim Fiyat"] = fd["Birim Fiyat"].map(tr_money)
-        fd["Bedelsiz Tutar"] = fd["Bedelsiz Tutar"].map(tr_money)
-        st.dataframe(fd, use_container_width=True, hide_index=True)
+        c1, c2 = st.columns(2)
+        c1.metric("Bedelsiz Toplam Adet", f"{fq:,.0f}".replace(",", "."))
+        c2.metric("Bedelsiz Toplam Tutar", tr_money(fr))
+
+        editor_df = free_df.copy()
+        editor_df["Adet"] = editor_df["Adet"].map(float)
+        editor_df["Birim Fiyat"] = editor_df["Birim Fiyat"].map(float)
+        editor_df["Bedelsiz Tutar"] = editor_df["Bedelsiz Tutar"].map(float)
+        edited = st.data_editor(
+            editor_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ID": st.column_config.NumberColumn("ID", disabled=True),
+                "Tarih": st.column_config.TextColumn("Tarih", disabled=True),
+                "Hafta": st.column_config.TextColumn("Hafta", disabled=True),
+                "E-Posta": st.column_config.TextColumn("E-Posta", disabled=True),
+                "Stok Kodu": st.column_config.TextColumn("Stok Kodu", disabled=True),
+                "Urun": st.column_config.TextColumn("Urun", disabled=True),
+                "Adet": st.column_config.NumberColumn("Adet", disabled=True),
+                "Birim Fiyat": st.column_config.NumberColumn("Birim Fiyat", disabled=True),
+                "Bedelsiz Tutar": st.column_config.NumberColumn("Bedelsiz Tutar", disabled=True),
+                "Aciklama": st.column_config.TextColumn("Kime / Aciklama"),
+            },
+            num_rows="fixed",
+            key="free_exit_editor",
+        )
+        if st.button("Bedelsiz Aciklamalari Kaydet", type="primary"):
+            rows = []
+            for _, r in edited.iterrows():
+                rows.append((str(r.get("Aciklama", "") or ""), int(r["ID"])))
+            conn.executemany("UPDATE sales SET free_exit_note=? WHERE id=?", rows)
+            conn.commit()
+            st.cache_data.clear()
+            st.success("Bedelsiz aciklamalari kaydedildi.")
+            st.rerun()
 
 else:
     conn = get_ready_conn()
