@@ -132,6 +132,43 @@ def inject_styles():
             background: var(--panel-2);
             border-radius: 10px;
         }
+        @media (max-width: 900px) {
+            .block-container {
+                padding-top: 0.3rem !important;
+                padding-left: 0.7rem !important;
+                padding-right: 0.7rem !important;
+                max-width: 100% !important;
+            }
+            h1 {
+                margin-top: 0.4rem !important;
+                font-size: 1.7rem !important;
+            }
+            p {
+                line-height: 1.35;
+            }
+            div[role="radiogroup"] {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+            }
+            div[role="radiogroup"] label {
+                margin-right: 0 !important;
+                width: calc(50% - 4px);
+                min-width: 120px;
+            }
+            .stButton > button {
+                width: 100%;
+            }
+            div[data-testid="stDataFrame"] {
+                font-size: 12px;
+            }
+            [data-testid="stMetricValue"] {
+                font-size: 1.2rem !important;
+            }
+            [data-testid="stMetricLabel"] {
+                font-size: 0.82rem !important;
+            }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1017,10 +1054,10 @@ def render_header():
         "<p style='text-align:center; margin-top:0; color:#aeb8cb;'>Satis Operasyon ve Karlilik Kontrol Paneli</p>",
         unsafe_allow_html=True,
     )
-    _, c2 = st.columns([5, 1])
-    with c2:
-        st.caption("Son Giris")
-        st.code(now_txt)
+    st.markdown(
+        f"<p style='text-align:center; margin-top:4px; color:#9ca3af; font-size:0.86rem;'>Son Giris: {now_txt}</p>",
+        unsafe_allow_html=True,
+    )
 
 def render_login():
     st.subheader("Giris")
