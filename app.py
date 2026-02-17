@@ -790,7 +790,7 @@ if section == "Dashboard":
         profit = float(metrics.iloc[0]["total_profit"] or 0)
         margin = (profit / rev * 100.0) if rev > 0 else 0.0
         c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Toplam Siparis Satiri", f"{order_rows:,.0f}".replace(",", "."))
+        c1.metric("Toplam Siparis", f"{order_rows:,.0f}".replace(",", "."))
         c2.metric("Toplam Adet", f"{q:,.0f}".replace(",", "."))
         c3.metric("Toplam Ciro", tr_money(rev))
         c4.metric("Toplam Maliyet", tr_money(cost))
