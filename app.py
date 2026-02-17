@@ -635,13 +635,12 @@ def get_free_exit_manage_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
         SELECT
             id AS "ID",
             order_date AS "Tarih",
-            week_label AS "Hafta",
             customer_email AS "E-Posta",
             sku AS "Stok Kodu",
             product_name AS "Urun",
             qty AS "Adet",
             unit_price AS "Birim Fiyat",
-            revenue AS "Bedelsiz Tutar",
+            revenue AS "_BedelsizTutar",
             COALESCE(free_exit_note, '') AS "Aciklama"
         FROM sales
         WHERE order_date >= ? AND order_date < ?
@@ -962,7 +961,7 @@ elif section == "Bedelsiz Cikislar":
         st.info("Bu ay bedelsiz cikis yok.")
     else:
         fq = float(free_df["Adet"].sum())
-        fr = float(free_df["Bedelsiz Tutar"].sum())
+        fr = float(free_df["_BedelsizTutar"].sum())
         c1, c2 = st.columns(2)
         c1.metric("Bedelsiz Toplam Adet", f"{fq:,.0f}".replace(",", "."))
         c2.metric("Bedelsiz Toplam Tutar", tr_money(fr))
@@ -970,7 +969,10 @@ elif section == "Bedelsiz Cikislar":
         editor_df = free_df.copy()
         editor_df["Adet"] = editor_df["Adet"].map(float)
         editor_df["Birim Fiyat"] = editor_df["Birim Fiyat"].map(float)
-        editor_df["Bedelsiz Tutar"] = editor_df["Bedelsiz Tutar"].map(float)
+        editor_df["_BedelsizTutar"] = editor_df["_BedelsizTutar"].map(float)
+        editor_df = editor_df[
+            ["ID", "Tarih", "E-Posta", "Stok Kodu", "Urun", "Adet", "Birim Fiyat", "Aciklama"]
+        ]
         edited = st.data_editor(
             editor_df,
             use_container_width=True,
@@ -978,13 +980,11 @@ elif section == "Bedelsiz Cikislar":
             column_config={
                 "ID": st.column_config.NumberColumn("ID", disabled=True),
                 "Tarih": st.column_config.TextColumn("Tarih", disabled=True),
-                "Hafta": st.column_config.TextColumn("Hafta", disabled=True),
                 "E-Posta": st.column_config.TextColumn("E-Posta", disabled=True),
                 "Stok Kodu": st.column_config.TextColumn("Stok Kodu", disabled=True),
                 "Urun": st.column_config.TextColumn("Urun", disabled=True),
                 "Adet": st.column_config.NumberColumn("Adet", disabled=True),
                 "Birim Fiyat": st.column_config.NumberColumn("Birim Fiyat", disabled=True),
-                "Bedelsiz Tutar": st.column_config.NumberColumn("Bedelsiz Tutar", disabled=True),
                 "Aciklama": st.column_config.TextColumn("Kime / Aciklama"),
             },
             num_rows="fixed",
