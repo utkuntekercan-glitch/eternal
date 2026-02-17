@@ -4,7 +4,7 @@ import os
 import re
 import sqlite3
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -399,11 +399,21 @@ def normalize_excel_date(value, fallback_iso: str) -> str:
     if value is None:
         return fallback_iso
     try:
-        # openpyxl may return datetime/date objects directly.
-        if hasattr(value, "strftime"):
+        if isinstance(value, datetime):
             return value.strftime("%Y-%m-%d")
-        dt = pd.to_datetime(str(value), errors="coerce", dayfirst=True)
+        if isinstance(value, date):
+            return value.strftime("%Y-%m-%d")
+        if isinstance(value, (int, float)):
+            # Excel serial date (day 1 = 1899-12-31 with leap bug adjustment).
+            serial = float(value)
+            if serial > 1000:
+                d = datetime(1899, 12, 30) + timedelta(days=serial)
+                return d.strftime("%Y-%m-%d")
+        dt = pd.to_datetime(str(value).strip(), errors="coerce", dayfirst=True)
         if pd.isna(dt):
+            return fallback_iso
+        # Guard against bad parse (e.g., impossible historical/future years).
+        if dt.year < 2020 or dt.year > (datetime.today().year + 1):
             return fallback_iso
         return dt.strftime("%Y-%m-%d")
     except Exception:
@@ -486,7 +496,9 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
             order_no = str(int(raw_order_no))
         else:
             order_no = str(raw_order_no).strip()
-        order_date = normalize_excel_date(r[7].value, order_date_iso)  # H
+        order_date = normalize_excel_date(r[7].value, "")  # H
+        if not order_date:
+            continue
         qty = normalize_num(r[17].value)  # R
         product_name = "" if r[18].value is None else str(r[18].value).strip()  # S
         unit_price = normalize_num(r[20].value)  # U
