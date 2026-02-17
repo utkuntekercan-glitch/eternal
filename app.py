@@ -823,12 +823,6 @@ def render_header():
         st.caption("Son Giris")
         st.code(now_txt)
 
-    b1, b2, b3 = st.columns(3)
-    b1.info("Canli Sistem")
-    b2.info("Supabase / PostgreSQL")
-    b3.info("Panel Aktif")
-
-
 def render_login():
     st.subheader("Giris")
     user = st.text_input("Kullanici Adi", key="login_user")
