@@ -22,6 +22,8 @@ DATABASE_URL = str(st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL", ""))
 USE_POSTGRES = bool(DATABASE_URL)
 APP_LOGO_URL = str(st.secrets.get("APP_LOGO_URL", os.getenv("APP_LOGO_URL", ""))).strip()
 FREE_EXIT_EMAIL = "hakanerdgnn@gmail.com"
+APP_USER = str(st.secrets.get("APP_USER", os.getenv("APP_USER", "admin"))).strip()
+APP_PASSWORD = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "1234"))).strip()
 
 
 def inject_styles():
@@ -474,8 +476,34 @@ def render_header():
         st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
 
 
+def render_login():
+    st.subheader("Giris")
+    user = st.text_input("Kullanici Adi", key="login_user")
+    password = st.text_input("Parola", type="password", key="login_pass")
+    if st.button("Giris Yap", type="primary"):
+        if user.strip() == APP_USER and password == APP_PASSWORD:
+            st.session_state["authenticated"] = True
+            st.success("Giris basarili.")
+            st.rerun()
+        else:
+            st.error("Kullanici adi veya parola hatali.")
+
+
 inject_styles()
 render_header()
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if not st.session_state["authenticated"]:
+    render_login()
+    st.stop()
+
+top_c1, top_c2 = st.columns([5, 1])
+with top_c2:
+    if st.button("Cikis"):
+        st.session_state["authenticated"] = False
+        st.rerun()
 
 sections = ["Ana Sayfa", "Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
