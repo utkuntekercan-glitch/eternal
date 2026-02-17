@@ -1151,13 +1151,15 @@ if section == "Dashboard":
         cost = float(metrics.iloc[0]["total_cost"] or 0)
         profit = rev - cost
         margin = (profit / rev * 100.0) if rev > 0 else 0.0
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Toplam Siparis", f"{order_rows:,.0f}".replace(",", "."))
-        c2.metric("Toplam Adet", f"{q:,.0f}".replace(",", "."))
-        c3.metric("Toplam Ciro", tr_money(rev))
-        c4.metric("Toplam Maliyet", tr_money(cost))
-        c5.metric("Net Kar", tr_money(profit))
-        c6.metric("Kar Marji", f"%{margin:.1f}")
+        r1c1, r1c2, r1c3 = st.columns(3)
+        r1c1.metric("Toplam Ciro", tr_money(rev))
+        r1c2.metric("Toplam Maliyet", tr_money(cost))
+        r1c3.metric("Net Kar", tr_money(profit))
+
+        r2c1, r2c2, r2c3 = st.columns(3)
+        r2c1.metric("Toplam Siparis", f"{order_rows:,.0f}".replace(",", "."))
+        r2c2.metric("Toplam Adet", f"{q:,.0f}".replace(",", "."))
+        r2c3.metric("Kar Marji", f"%{margin:.1f}")
         min_d = str(date_range_df.iloc[0]["min_date"] or "") if not date_range_df.empty else ""
         max_d = str(date_range_df.iloc[0]["max_date"] or "") if not date_range_df.empty else ""
         if min_d and max_d:
