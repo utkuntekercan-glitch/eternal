@@ -569,7 +569,7 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
         FROM (
             SELECT
                 COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT)) AS order_key,
-                MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
+                SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
             FROM sales
             WHERE COALESCE(is_free_exit, 0) = 0
             GROUP BY COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT))
@@ -690,7 +690,7 @@ def get_month_order_total(_conn: DBConn, ym: str) -> pd.DataFrame:
         FROM (
             SELECT
                 COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT)) AS order_key,
-                MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
+                SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
             FROM sales
             WHERE order_date >= ? AND order_date < ?
               AND COALESCE(is_free_exit, 0) = 0
