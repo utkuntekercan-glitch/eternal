@@ -194,6 +194,7 @@ def init_db(conn: DBConn):
             qty REAL NOT NULL,
             unit_price REAL NOT NULL,
             revenue REAL NOT NULL,
+            order_total REAL NOT NULL DEFAULT 0,
             source_file TEXT NOT NULL,
             source_hash TEXT NOT NULL
         )
@@ -223,6 +224,7 @@ def init_db(conn: DBConn):
     ensure_sales_column("free_exit_note", "TEXT")
     ensure_sales_column("order_no", "TEXT")
     ensure_sales_column("order_item_key", "TEXT")
+    ensure_sales_column("order_total", "REAL NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS products (
@@ -375,6 +377,10 @@ def build_order_item_key(
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
 
+def is_paid_status(v) -> bool:
+    return normalize_header_text(v) == "odendi"
+
+
 def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
     from openpyxl import load_workbook
 
@@ -383,8 +389,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     order_no_idx = find_order_no_col(ws)
     rows = []
     for excel_row_no, r in enumerate(ws.iter_rows(min_row=2), start=2):
-        pay_status = "" if r[6].value is None else str(r[6].value).strip().lower()  # G
-        if pay_status != "ödendi" and pay_status != "odendi":
+        if not is_paid_status(r[6].value):  # G
             continue
         raw_order_no = r[order_no_idx].value if order_no_idx is not None and order_no_idx < len(r) else None
         if raw_order_no is None:
@@ -399,6 +404,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
         qty = normalize_num(r[17].value)  # R
         product_name = "" if r[18].value is None else str(r[18].value).strip()  # S
         unit_price = normalize_num(r[20].value)  # U
+        order_total = normalize_num(r[15].value)  # P
         sku = "" if r[24].value is None else str(r[24].value).strip()  # Y
         if sku and product_name and qty > 0:
             rows.append(
@@ -414,6 +420,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
                     "qty": float(qty),
                     "unit_price": float(unit_price),
                     "revenue": float(qty) * float(unit_price),
+                    "order_total": float(order_total),
                 }
             )
     return pd.DataFrame(rows)
@@ -540,6 +547,24 @@ def get_dashboard_metrics(_conn: DBConn) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT COALESCE(SUM(order_total_final), 0) AS total_order_revenue
+        FROM (
+            SELECT
+                COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT)) AS order_key,
+                MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
+            FROM sales
+            WHERE COALESCE(is_free_exit, 0) = 0
+            GROUP BY COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT))
+        ) t
+        """,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_order_rows(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -638,6 +663,27 @@ def get_month_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
         ) x
         """,
         (ym,),
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_month_order_total(_conn: DBConn, ym: str) -> pd.DataFrame:
+    start, end = month_bounds(ym)
+    return df_query(
+        _conn,
+        """
+        SELECT COALESCE(SUM(order_total_final), 0) AS total_order_revenue
+        FROM (
+            SELECT
+                COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT)) AS order_key,
+                MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END) AS order_total_final
+            FROM sales
+            WHERE order_date >= ? AND order_date < ?
+              AND COALESCE(is_free_exit, 0) = 0
+            GROUP BY COALESCE(NULLIF(order_no, ''), 'ROW-' || CAST(id AS TEXT))
+        ) t
+        """,
+        (start, end),
     )
 
 
@@ -792,15 +838,16 @@ if section == "Dashboard":
         st.rerun()
 
     metrics = get_dashboard_metrics(conn)
+    order_total_df = get_dashboard_order_total(conn)
     order_rows_df = get_dashboard_order_rows(conn)
     if metrics.empty or float(metrics.iloc[0]["total_revenue"] or 0) <= 0:
         st.info("Gosterilecek veri yok.")
     else:
         order_rows = int(order_rows_df.iloc[0]["order_rows"] or 0) if not order_rows_df.empty else 0
         q = float(metrics.iloc[0]["total_qty"] or 0)
-        rev = float(metrics.iloc[0]["total_revenue"] or 0)
+        rev = float(order_total_df.iloc[0]["total_order_revenue"] or 0) if not order_total_df.empty else float(metrics.iloc[0]["total_revenue"] or 0)
         cost = float(metrics.iloc[0]["total_cost"] or 0)
-        profit = float(metrics.iloc[0]["total_profit"] or 0)
+        profit = rev - cost
         margin = (profit / rev * 100.0) if rev > 0 else 0.0
         c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("Toplam Siparis", f"{order_rows:,.0f}".replace(",", "."))
@@ -939,6 +986,7 @@ elif section == "Veri Ekle":
                         float(r["qty"]),
                         float(r["unit_price"]),
                         float(r["revenue"]),
+                        float(r.get("order_total", 0) or 0),
                         r["source_file"],
                         r["source_hash"],
                     )
@@ -949,8 +997,8 @@ elif section == "Veri Ekle":
                 )
                 conn.executemany(
                     """
-                    INSERT INTO sales(week_label, order_date, order_no, order_item_key, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue, source_file, source_hash)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO sales(week_label, order_date, order_no, order_item_key, customer_email, is_free_exit, sku, product_name, qty, unit_price, revenue, order_total, source_file, source_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(order_item_key) DO NOTHING
                     """,
                     rows,
@@ -984,14 +1032,15 @@ elif section == "Aylik Rapor":
 
     prod_df = get_month_products(conn, ym.strip())
     totals_df = get_month_totals(conn, ym.strip())
+    month_order_total_df = get_month_order_total(conn, ym.strip())
 
     if prod_df.empty:
         st.info("Bu ay icin veri yok.")
     else:
         t_qty = float(totals_df.iloc[0]["total_qty"] or 0)
-        t_rev = float(totals_df.iloc[0]["total_revenue"] or 0)
+        t_rev = float(month_order_total_df.iloc[0]["total_order_revenue"] or 0) if not month_order_total_df.empty else float(totals_df.iloc[0]["total_revenue"] or 0)
         t_cost = float(totals_df.iloc[0]["total_cost"] or 0)
-        t_profit = float(totals_df.iloc[0]["total_profit"] or 0)
+        t_profit = t_rev - t_cost
         x1, x2, x3, x4 = st.columns(4)
         x1.metric("Toplam Adet", f"{t_qty:,.0f}".replace(",", "."))
         x2.metric("Toplam Ciro", tr_money(t_rev))
