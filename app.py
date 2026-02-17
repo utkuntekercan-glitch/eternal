@@ -172,9 +172,14 @@ def get_conn() -> DBConn:
         if psycopg2 is None:
             raise RuntimeError("Postgres icin psycopg2-binary gerekli.")
         if "sslmode=" in DATABASE_URL:
-            raw = psycopg2.connect(DATABASE_URL)
+            raw = psycopg2.connect(DATABASE_URL, connect_timeout=8, application_name="eternal-streamlit")
         else:
-            raw = psycopg2.connect(DATABASE_URL, sslmode="require")
+            raw = psycopg2.connect(
+                DATABASE_URL,
+                sslmode="require",
+                connect_timeout=8,
+                application_name="eternal-streamlit",
+            )
         raw.autocommit = False
         return DBConn("postgres", raw)
 
@@ -234,9 +239,22 @@ def init_db(conn: DBConn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sales_monthly_sku (
+            ym TEXT NOT NULL,
+            sku TEXT NOT NULL,
+            product_name TEXT NOT NULL,
+            qty REAL NOT NULL,
+            revenue REAL NOT NULL,
+            PRIMARY KEY (ym, sku)
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_week ON sales(week_label)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_monthly_ym ON sales_monthly_sku(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_products_active ON products(active)")
     conn.commit()
 
@@ -246,6 +264,26 @@ def df_query(conn: DBConn, q: str, params=()):
     rows = cur.fetchall()
     cols = [c[0] for c in cur.description] if cur.description else []
     return pd.DataFrame(rows, columns=cols)
+
+
+def refresh_monthly_summary(conn: DBConn):
+    conn.execute("DELETE FROM sales_monthly_sku")
+    conn.execute(
+        """
+        INSERT INTO sales_monthly_sku(ym, sku, product_name, qty, revenue)
+        SELECT
+            SUBSTR(order_date, 1, 7) AS ym,
+            sku,
+            MAX(product_name) AS product_name,
+            SUM(qty) AS qty,
+            SUM(revenue) AS revenue
+        FROM sales
+        WHERE order_date IS NOT NULL
+          AND COALESCE(is_free_exit, 0) = 0
+        GROUP BY SUBSTR(order_date, 1, 7), sku
+        """
+    )
+    conn.commit()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -441,6 +479,31 @@ def load_month_data(_conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
+def load_month_summary(_conn: DBConn, ym: str) -> pd.DataFrame:
+    base = df_query(
+        _conn,
+        """
+        SELECT ym, sku, product_name, qty, revenue
+        FROM sales_monthly_sku
+        WHERE ym = ?
+        """,
+        (ym,),
+    )
+    if base.empty:
+        return base
+    products = df_query(_conn, "SELECT sku, category, unit_cost, active FROM products")
+    merged = base.merge(products, on="sku", how="left")
+    merged["category"] = merged["category"].fillna("Genel")
+    merged["active"] = merged["active"].fillna(1)
+    merged["unit_cost"] = merged["unit_cost"].fillna(0.0)
+    merged["cost_total"] = merged["qty"] * merged["unit_cost"]
+    merged["profit"] = merged["revenue"] - merged["cost_total"]
+    merged["margin_pct"] = merged["profit"] / merged["revenue"].replace(0, pd.NA) * 100
+    merged["margin_pct"] = merged["margin_pct"].fillna(0.0)
+    return merged
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
     start = f"{ym}-01"
     y, m = map(int, ym.split("-"))
@@ -461,7 +524,8 @@ def load_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
 def render_brand_header():
     left, center, right = st.columns([1, 4, 1])
     with center:
-        if APP_LOGO_URL:
+        # Remote image URLs can block first paint on slow networks.
+        if APP_LOGO_URL and not APP_LOGO_URL.lower().startswith(("http://", "https://")):
             st.image(APP_LOGO_URL, width=72)
         st.title("Eternal Fire")
         st.caption("Satis Operasyon ve Karlilik Kontrol Paneli")
@@ -483,6 +547,10 @@ if "_sales_bootstrap" not in st.session_state:
     pcount = int(pcount_df.iloc[0]["n"]) if not pcount_df.empty else 0
     if pcount == 0:
         sync_products_from_sales(conn)
+    summary_count_df = df_query(conn, "SELECT COUNT(*) AS n FROM sales_monthly_sku")
+    summary_count = int(summary_count_df.iloc[0]["n"]) if not summary_count_df.empty else 0
+    if summary_count == 0:
+        refresh_monthly_summary(conn)
         st.cache_data.clear()
     st.session_state["_sales_bootstrap"] = True
 
@@ -492,7 +560,24 @@ section = st.radio("Bolum", sections, horizontal=True, label_visibility="collaps
 if section == "Genel Dashboard":
     st.subheader("Genel Satis Ozeti")
     dash_ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
-    dash = load_month_data(conn, dash_ym.strip())
+    if "_dash_loaded" not in st.session_state:
+        st.session_state["_dash_loaded"] = False
+    if "_dash_last_ym" not in st.session_state:
+        st.session_state["_dash_last_ym"] = ""
+
+    if st.session_state["_dash_last_ym"] != dash_ym.strip():
+        st.session_state["_dash_loaded"] = False
+        st.session_state["_dash_last_ym"] = dash_ym.strip()
+
+    if not st.session_state["_dash_loaded"]:
+        if st.button("Dashboard verisini getir", type="primary"):
+            st.session_state["_dash_loaded"] = True
+            st.rerun()
+        else:
+            st.info("Hizli acilis icin dashboard verisi butonla yuklenir.")
+            st.stop()
+
+    dash = load_month_summary(conn, dash_ym.strip())
     if dash.empty:
         st.info("Bu ay icin veri yok.")
     else:
@@ -543,6 +628,7 @@ elif section == "Excel Yukle":
             with st.spinner("Siliniyor..."):
                 conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
                 conn.commit()
+                refresh_monthly_summary(conn)
                 st.cache_data.clear()
             st.success(f"{last_week} haftasi verileri silindi.")
             st.rerun()
@@ -552,6 +638,7 @@ elif section == "Excel Yukle":
             with st.spinner("Siliniyor..."):
                 conn.execute("DELETE FROM sales WHERE week_label=?", (sel_week,))
                 conn.commit()
+                refresh_monthly_summary(conn)
                 st.cache_data.clear()
             st.success(f"{sel_week} haftasi verileri silindi.")
             st.rerun()
@@ -594,6 +681,7 @@ elif section == "Excel Yukle":
         )
         conn.commit()
         sync_products_from_sales(conn)
+        refresh_monthly_summary(conn)
         st.cache_data.clear()
         free_rows = int(parsed["is_free_exit"].sum()) if "is_free_exit" in parsed.columns else 0
         st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
