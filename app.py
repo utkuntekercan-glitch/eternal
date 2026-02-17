@@ -923,17 +923,8 @@ elif section == "Veri Ekle":
                 )
                 conn.commit()
                 upsert_products_from_rows(conn, parsed[["sku", "product_name"]])
-                months = (
-                    parsed["order_date"]
-                    .astype(str)
-                    .str.slice(0, 7)
-                    .dropna()
-                    .unique()
-                    .tolist()
-                )
-                for ym in months:
-                    if is_valid_ym(ym):
-                        refresh_monthly_summary_for_month(conn, ym)
+                # Rebuild monthly summary after import to guarantee report freshness.
+                refresh_monthly_summary_all(conn)
                 st.cache_data.clear()
                 free_rows = int(parsed["is_free_exit"].sum())
                 after_count = int(
@@ -941,9 +932,14 @@ elif section == "Veri Ekle":
                 )
                 inserted_rows = max(0, after_count - before_count)
                 skipped_rows = max(0, len(rows) - inserted_rows)
-                st.success(
-                    f"Yukleme tamamlandi. Eklenen: {inserted_rows} | Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows}"
-                )
+                if inserted_rows == 0:
+                    st.warning(
+                        f"Yeni kayit eklenmedi. Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows}"
+                    )
+                else:
+                    st.success(
+                        f"Yukleme tamamlandi. Eklenen: {inserted_rows} | Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows}"
+                    )
 
 elif section == "Aylik Rapor":
     conn = get_ready_conn()
