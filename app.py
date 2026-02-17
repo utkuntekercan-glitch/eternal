@@ -505,13 +505,10 @@ with top_c2:
         st.session_state["authenticated"] = False
         st.rerun()
 
-sections = ["Ana Sayfa", "Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
+sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
-if section == "Ana Sayfa":
-    st.info("Hizli acilis modu aktif. Ustten bolum secerek devam edin.")
-
-elif section == "Genel Dashboard":
+if section == "Genel Dashboard":
     conn = get_ready_conn()
     ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
     if not is_valid_ym(ym):
