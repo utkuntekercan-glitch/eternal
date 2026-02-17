@@ -301,15 +301,22 @@ st.markdown("<h1 style='text-align:center;'>Eternal Fire</h1>", unsafe_allow_htm
 if "_sales_conn" not in st.session_state:
     st.session_state["_sales_conn"] = get_conn()
 conn = st.session_state["_sales_conn"]
-# Always ensure schema exists (safe/idempotent) to avoid missing-table errors after deploys.
-init_db(conn)
+# Ensure schema once per session to avoid repeating init work on every rerun.
+schema_key = f"{conn.driver}:v3"
+if st.session_state.get("_sales_schema_ready") != schema_key:
+    init_db(conn)
+    st.session_state["_sales_schema_ready"] = schema_key
 if "_sales_bootstrap" not in st.session_state:
-    sync_products_from_sales(conn)
+    pcount_df = df_query(conn, "SELECT COUNT(*) AS n FROM products")
+    pcount = int(pcount_df.iloc[0]["n"]) if not pcount_df.empty else 0
+    if pcount == 0:
+        sync_products_from_sales(conn)
     st.session_state["_sales_bootstrap"] = True
 
-tab0, tab1, tab2, tab3 = st.tabs(["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"])
+sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urun Master"]
+section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
-with tab0:
+if section == "Genel Dashboard":
     st.subheader("Genel Satis Ozeti")
     dash_ym = st.text_input("Dashboard Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"), key="dash_ym")
     dash = load_month_data(conn, dash_ym.strip())
@@ -351,7 +358,7 @@ with tab0:
         by_cat["Kar"] = by_cat["Kar"].map(tr_money)
         st.dataframe(by_cat, use_container_width=True, hide_index=True)
 
-with tab1:
+elif section == "Excel Yukle":
     st.subheader("Haftalik Excel Yukleme")
     uploads = df_query(
         conn,
@@ -423,7 +430,7 @@ with tab1:
         free_rows = int(parsed["is_free_exit"].sum()) if "is_free_exit" in parsed.columns else 0
         st.success(f"Yukleme tamamlandi. {len(rows)} satir eklendi. Bedelsiz cikis: {free_rows}")
 
-with tab2:
+elif section == "Aylik Rapor":
     st.subheader("Aylik Satis / Ciro / Kar")
     ym = st.text_input("Ay (YYYY-MM)", value=datetime.today().strftime("%Y-%m"))
     report = load_month_data(conn, ym.strip())
@@ -522,7 +529,7 @@ with tab2:
         free_disp["Bedelsiz Tutar"] = free_disp["Bedelsiz Tutar"].map(tr_money)
         st.dataframe(free_disp, use_container_width=True, hide_index=True)
 
-with tab3:
+else:
     st.subheader("Urun Master (Kategori + Maliyet + Aktif)")
     products = df_query(
         conn,
