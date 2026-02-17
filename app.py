@@ -291,9 +291,9 @@ def refresh_monthly_summary_all(conn: DBConn):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_uploads(conn: DBConn) -> pd.DataFrame:
+def get_uploads(_conn: DBConn) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT week_label, source_file, COUNT(*) AS row_count, MAX(id) AS max_id
         FROM sales
@@ -304,9 +304,9 @@ def get_uploads(conn: DBConn) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_dashboard_metrics(conn: DBConn, ym: str) -> pd.DataFrame:
+def get_dashboard_metrics(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT
             COALESCE(SUM(m.qty), 0) AS total_qty,
@@ -322,9 +322,9 @@ def get_dashboard_metrics(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_dashboard_top_products(conn: DBConn, ym: str) -> pd.DataFrame:
+def get_dashboard_top_products(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT sku AS "Stok Kodu", product_name AS "Urun", qty AS "Adet"
         FROM sales_monthly_sku
@@ -337,9 +337,9 @@ def get_dashboard_top_products(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_dashboard_categories(conn: DBConn, ym: str) -> pd.DataFrame:
+def get_dashboard_categories(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT
             COALESCE(p.category, 'Genel') AS "Kategori",
@@ -356,9 +356,9 @@ def get_dashboard_categories(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_month_products(conn: DBConn, ym: str) -> pd.DataFrame:
+def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT
             m.sku AS "Stok Kodu",
@@ -378,9 +378,9 @@ def get_month_products(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_month_totals(conn: DBConn, ym: str) -> pd.DataFrame:
+def get_month_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT
             COALESCE(SUM("Adet"), 0) AS total_qty,
@@ -403,10 +403,10 @@ def get_month_totals(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_month_sku_details(conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
+def get_month_sku_details(_conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
     start, end = month_bounds(ym)
     return df_query(
-        conn,
+        _conn,
         """
         SELECT
             week_label AS "Hafta",
@@ -427,10 +427,10 @@ def get_month_sku_details(conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_month_free_exit_rows(conn: DBConn, ym: str) -> pd.DataFrame:
+def get_month_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
     start, end = month_bounds(ym)
     return df_query(
-        conn,
+        _conn,
         """
         SELECT
             week_label AS "Hafta",
@@ -451,9 +451,9 @@ def get_month_free_exit_rows(conn: DBConn, ym: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_products_master(conn: DBConn) -> pd.DataFrame:
+def get_products_master(_conn: DBConn) -> pd.DataFrame:
     return df_query(
-        conn,
+        _conn,
         """
         SELECT sku, product_name, category, unit_cost, active
         FROM products
