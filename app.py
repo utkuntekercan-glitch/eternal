@@ -661,6 +661,20 @@ def get_dashboard_order_rows(_conn: DBConn) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_dashboard_date_range(_conn: DBConn) -> pd.DataFrame:
+    return df_query(
+        _conn,
+        """
+        SELECT
+            MIN(order_date) AS min_date,
+            MAX(order_date) AS max_date
+        FROM sales
+        WHERE COALESCE(is_free_exit, 0) = 0
+        """,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_top_products(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
@@ -1137,6 +1151,7 @@ if section == "Dashboard":
     metrics = get_dashboard_metrics(conn)
     order_total_df = get_dashboard_order_total(conn)
     order_rows_df = get_dashboard_order_rows(conn)
+    date_range_df = get_dashboard_date_range(conn)
     if metrics.empty or float(metrics.iloc[0]["total_revenue"] or 0) <= 0:
         st.info("Gosterilecek veri yok.")
     else:
@@ -1153,6 +1168,15 @@ if section == "Dashboard":
         c4.metric("Toplam Maliyet", tr_money(cost))
         c5.metric("Net Kar", tr_money(profit))
         c6.metric("Kar Marji", f"%{margin:.1f}")
+        min_d = str(date_range_df.iloc[0]["min_date"] or "") if not date_range_df.empty else ""
+        max_d = str(date_range_df.iloc[0]["max_date"] or "") if not date_range_df.empty else ""
+        if min_d and max_d:
+            try:
+                min_txt = datetime.strptime(min_d[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+                max_txt = datetime.strptime(max_d[:10], "%Y-%m-%d").strftime("%d.%m.%Y")
+                st.caption(f"Toplam Siparis ve Toplam Adet veri araligi: {min_txt} - {max_txt}")
+            except Exception:
+                st.caption(f"Toplam Siparis ve Toplam Adet veri araligi: {min_d} - {max_d}")
 
         st.markdown("#### En Cok Satan Urunler")
         top_df = get_dashboard_top_products(conn)
