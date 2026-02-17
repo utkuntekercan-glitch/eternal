@@ -134,14 +134,32 @@ class DBConn:
         return q.replace("?", "%s") if self.driver == "postgres" else q
 
     def execute(self, q: str, params=()):
-        cur = self._conn.cursor()
-        cur.execute(self._sql(q), tuple(params))
-        return cur
+        try:
+            cur = self._conn.cursor()
+            cur.execute(self._sql(q), tuple(params))
+            return cur
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            cur = self._conn.cursor()
+            cur.execute(self._sql(q), tuple(params))
+            return cur
 
     def executemany(self, q: str, seq):
-        cur = self._conn.cursor()
-        cur.executemany(self._sql(q), [tuple(x) for x in seq])
-        return cur
+        try:
+            cur = self._conn.cursor()
+            cur.executemany(self._sql(q), [tuple(x) for x in seq])
+            return cur
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            cur = self._conn.cursor()
+            cur.executemany(self._sql(q), [tuple(x) for x in seq])
+            return cur
 
     def commit(self):
         self._conn.commit()
