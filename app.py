@@ -722,7 +722,7 @@ else:
             },
             num_rows="fixed",
         )
-        if st.button("Urun Master Kaydet", type="primary"):
+        if st.button("Urun Maliyet Kaydet", type="primary"):
             now = datetime.now().isoformat(timespec="seconds")
             rows = []
             for _, r in edited.iterrows():
