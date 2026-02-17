@@ -670,7 +670,7 @@ with top_c2:
         st.session_state["authenticated"] = False
         st.rerun()
 
-sections = ["Genel Dashboard", "Excel Yukle", "Aylik Rapor", "Urunler"]
+sections = ["Genel Dashboard", "Veri Ekle", "Aylik Rapor", "Urunler"]
 section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
 
 if section == "Genel Dashboard":
@@ -716,7 +716,7 @@ if section == "Genel Dashboard":
             cat_df["Kar"] = cat_df["Kar"].map(tr_money)
             st.dataframe(cat_df, use_container_width=True, hide_index=True)
 
-elif section == "Excel Yukle":
+elif section == "Veri Ekle":
     conn = get_ready_conn()
     st.info("Excel sadece ice aktarma icin kullanilir. Dosyayi bilgisayardan silseniz bile veriler veritabaninda kalir.")
 
