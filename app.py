@@ -169,6 +169,7 @@ def get_conn() -> DBConn:
         raw.autocommit = False
         cur = raw.cursor()
         cur.execute("SET statement_timeout TO 12000")
+        cur.execute("SET lock_timeout TO 3000")
         cur.close()
         return DBConn("postgres", raw)
 
@@ -197,10 +198,26 @@ def init_db(conn: DBConn):
         )
         """
     )
-    try:
-        conn.execute("ALTER TABLE sales ADD COLUMN free_exit_note TEXT")
-    except Exception:
-        conn.rollback()
+    # Add new columns only when missing to avoid startup lock/contention patterns.
+    if conn.driver == "postgres":
+        col_df = df_query(
+            conn,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name='sales' AND column_name='free_exit_note'
+            LIMIT 1
+            """,
+        )
+        if col_df.empty:
+            conn.execute("ALTER TABLE sales ADD COLUMN free_exit_note TEXT")
+    else:
+        col_df = df_query(conn, "PRAGMA table_info(sales)")
+        has_col = False
+        if not col_df.empty and "name" in col_df.columns:
+            has_col = bool((col_df["name"] == "free_exit_note").any())
+        if not has_col:
+            conn.execute("ALTER TABLE sales ADD COLUMN free_exit_note TEXT")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS products (
