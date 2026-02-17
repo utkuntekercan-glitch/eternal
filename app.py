@@ -1482,8 +1482,7 @@ elif section == "Bedelsiz Cikislar":
     free_months_df = get_available_months(conn, free_only=1)
     free_months = free_months_df["ym"].dropna().astype(str).tolist() if not free_months_df.empty else []
     if not free_months:
-        st.info("Bedelsiz satis verisi yok.")
-        st.stop()
+        free_months = [datetime.today().strftime("%Y-%m")]
     ym = st.selectbox("Ay Sec", free_months, key="free_ym_select")
 
     free_df = get_free_exit_manage_rows(conn, ym.strip())
