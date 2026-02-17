@@ -18,9 +18,15 @@ except Exception:
 
 try:
     from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
     from reportlab.pdfgen import canvas
 except Exception:
     A4 = None
+    colors = None
+    pdfmetrics = None
+    TTFont = None
     canvas = None
 
 
@@ -828,69 +834,164 @@ def get_products_master(_conn: DBConn) -> pd.DataFrame:
     )
 
 
+def _get_pdf_fonts() -> tuple[str, str]:
+    if pdfmetrics is None or TTFont is None:
+        return ("Helvetica", "Helvetica-Bold")
+
+    regular_name = "EFDejaVuSans"
+    bold_name = "EFDejaVuSansBold"
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    if regular_name in registered and bold_name in registered:
+        return (regular_name, bold_name)
+
+    candidates = [
+        (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ),
+        (
+            "C:/Windows/Fonts/arial.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+        ),
+    ]
+    for reg_path, bold_path in candidates:
+        try:
+            if regular_name not in registered:
+                pdfmetrics.registerFont(TTFont(regular_name, reg_path))
+            if bold_name not in registered:
+                pdfmetrics.registerFont(TTFont(bold_name, bold_path))
+            return (regular_name, bold_name)
+        except Exception:
+            continue
+    return ("Helvetica", "Helvetica-Bold")
+
+
 def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFrame, prod_df: pd.DataFrame) -> bytes | None:
-    if canvas is None or A4 is None:
+    if canvas is None or A4 is None or colors is None:
         return None
 
+    font_regular, font_bold = _get_pdf_fonts()
     total_qty = float(totals_df.iloc[0]["total_qty"] or 0) if not totals_df.empty else 0.0
     total_rev = float(order_total_df.iloc[0]["total_order_revenue"] or 0) if not order_total_df.empty else 0.0
     total_cost = float(totals_df.iloc[0]["total_cost"] or 0) if not totals_df.empty else 0.0
     total_profit = total_rev - total_cost
 
+    def money(v: float) -> str:
+        return f"₺{format(float(v), ',.2f').replace(',', '.')}"
+
     out = io.BytesIO()
     pdf = canvas.Canvas(out, pagesize=A4)
     w, h = A4
+    margin = 36
 
     def draw_header(page_no: int):
-        pdf.setFont("Helvetica-Bold", 14)
-        pdf.drawString(40, h - 40, f"Eternal Fire Aylik Rapor - {ym}")
-        pdf.setFont("Helvetica", 9)
-        pdf.drawString(40, h - 56, f"Uretim Tarihi: {datetime.now(ZoneInfo('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}")
-        pdf.drawRightString(w - 40, h - 56, f"Sayfa {page_no}")
-        pdf.setFont("Helvetica", 10)
-        pdf.drawString(40, h - 80, f"Toplam Adet: {format(total_qty, ',.0f').replace(',', '.')}")
-        pdf.drawString(200, h - 80, f"Toplam Ciro: TL {format(total_rev, ',.2f').replace(',', '.')}")
-        pdf.drawString(380, h - 80, f"Toplam Maliyet: TL {format(total_cost, ',.2f').replace(',', '.')}")
-        pdf.drawString(40, h - 96, f"Net Kar: TL {format(total_profit, ',.2f').replace(',', '.')}")
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.drawString(40, h - 120, "SKU")
-        pdf.drawString(125, h - 120, "Urun")
-        pdf.drawRightString(355, h - 120, "Adet")
-        pdf.drawRightString(440, h - 120, "Ciro")
-        pdf.drawRightString(520, h - 120, "Maliyet")
-        pdf.drawRightString(w - 40, h - 120, "Kar")
-        pdf.line(40, h - 124, w - 40, h - 124)
+        pdf.setFillColor(colors.HexColor("#111827"))
+        pdf.rect(0, h - 84, w, 84, stroke=0, fill=1)
+        pdf.setFillColor(colors.HexColor("#f59e0b"))
+        pdf.rect(0, h - 84, 7, 84, stroke=0, fill=1)
+
+        pdf.setFillColor(colors.white)
+        pdf.setFont(font_bold, 17)
+        pdf.drawString(margin, h - 34, "Eternal Fire")
+        pdf.setFont(font_regular, 11)
+        pdf.drawString(margin, h - 52, "Aylık Satış ve Karlılık Raporu")
+        pdf.setFont(font_regular, 9)
+        pdf.drawRightString(w - margin, h - 36, f"Rapor Ayı: {ym}")
+        pdf.drawRightString(
+            w - margin,
+            h - 52,
+            f"Oluşturma: {datetime.now(ZoneInfo('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}",
+        )
+        pdf.drawRightString(w - margin, h - 68, f"Sayfa {page_no}")
+
+        card_top = h - 98
+        card_h = 40
+        card_w = (w - (margin * 2) - 18) / 4
+        card_bg = colors.HexColor("#f3f4f6")
+        metrics = [
+            ("Toplam Adet", format(total_qty, ",.0f").replace(",", ".")),
+            ("Toplam Ciro", money(total_rev)),
+            ("Toplam Maliyet", money(total_cost)),
+            ("Net Kar", money(total_profit)),
+        ]
+        for i, (title, value) in enumerate(metrics):
+            x = margin + i * (card_w + 6)
+            pdf.setFillColor(card_bg)
+            pdf.roundRect(x, card_top - card_h, card_w, card_h, 6, stroke=0, fill=1)
+            pdf.setFillColor(colors.HexColor("#374151"))
+            pdf.setFont(font_regular, 8)
+            pdf.drawString(x + 8, card_top - 14, title)
+            pdf.setFillColor(colors.HexColor("#111827"))
+            pdf.setFont(font_bold, 11)
+            pdf.drawString(x + 8, card_top - 30, value)
+
+        table_top = card_top - card_h - 14
+        col_x = {
+            "sku": margin,
+            "urun": margin + 82,
+            "adet": margin + 320,
+            "ciro": margin + 390,
+            "maliyet": margin + 470,
+            "kar": w - margin,
+        }
+        pdf.setFillColor(colors.HexColor("#1f2937"))
+        pdf.rect(margin, table_top - 18, w - (margin * 2), 18, stroke=0, fill=1)
+        pdf.setFillColor(colors.white)
+        pdf.setFont(font_bold, 8.5)
+        pdf.drawString(col_x["sku"] + 4, table_top - 12, "SKU")
+        pdf.drawString(col_x["urun"] + 4, table_top - 12, "Ürün")
+        pdf.drawRightString(col_x["adet"] + 46, table_top - 12, "Adet")
+        pdf.drawRightString(col_x["ciro"] + 60, table_top - 12, "Ciro")
+        pdf.drawRightString(col_x["maliyet"] + 62, table_top - 12, "Maliyet")
+        pdf.drawRightString(col_x["kar"], table_top - 12, "Kar")
+        return table_top - 24, col_x
 
     page_no = 1
-    draw_header(page_no)
-    y = h - 140
-    pdf.setFont("Helvetica", 8)
+    y, col_x = draw_header(page_no)
+    row_h = 16
 
     if prod_df.empty:
-        pdf.drawString(40, y, "Bu ay icin veri yok.")
+        pdf.setFillColor(colors.HexColor("#111827"))
+        pdf.setFont(font_regular, 10)
+        pdf.drawString(margin, y - 4, "Bu ay için veri yok.")
     else:
-        for _, r in prod_df.iterrows():
-            if y < 50:
+        for i, (_, r) in enumerate(prod_df.iterrows()):
+            if y < 52:
+                pdf.setStrokeColor(colors.HexColor("#e5e7eb"))
+                pdf.line(margin, 34, w - margin, 34)
+                pdf.setFillColor(colors.HexColor("#6b7280"))
+                pdf.setFont(font_regular, 8)
+                pdf.drawString(margin, 22, "Eternal Fire - Finans Raporu")
                 pdf.showPage()
                 page_no += 1
-                draw_header(page_no)
-                y = h - 140
-                pdf.setFont("Helvetica", 8)
+                y, col_x = draw_header(page_no)
+            if i % 2 == 0:
+                pdf.setFillColor(colors.HexColor("#f9fafb"))
+                pdf.rect(margin, y - row_h + 3, w - (margin * 2), row_h, stroke=0, fill=1)
+
             sku = str(r.get("Stok Kodu", "") or "")
             name = str(r.get("Urun", "") or "")
-            if len(name) > 44:
-                name = name[:41] + "..."
+            if len(name) > 40:
+                name = name[:37] + "..."
             adet = float(r.get("Adet", 0) or 0)
             ciro = float(r.get("Ciro", 0) or 0)
             maliyet = float(r.get("Maliyet", 0) or 0)
             kar = float(r.get("Kar", 0) or 0)
-            pdf.drawString(40, y, sku[:15])
-            pdf.drawString(125, y, name)
-            pdf.drawRightString(355, y, format(adet, ",.0f").replace(",", "."))
-            pdf.drawRightString(440, y, format(ciro, ",.2f").replace(",", "."))
-            pdf.drawRightString(520, y, format(maliyet, ",.2f").replace(",", "."))
-            pdf.drawRightString(w - 40, y, format(kar, ",.2f").replace(",", "."))
-            y -= 14
+            pdf.setFillColor(colors.HexColor("#111827"))
+            pdf.setFont(font_regular, 8.3)
+            pdf.drawString(col_x["sku"] + 4, y - 8, sku[:14])
+            pdf.drawString(col_x["urun"] + 4, y - 8, name)
+            pdf.drawRightString(col_x["adet"] + 46, y - 8, format(adet, ",.0f").replace(",", "."))
+            pdf.drawRightString(col_x["ciro"] + 60, y - 8, money(ciro))
+            pdf.drawRightString(col_x["maliyet"] + 62, y - 8, money(maliyet))
+            pdf.drawRightString(col_x["kar"], y - 8, money(kar))
+            y -= row_h
+
+    pdf.setStrokeColor(colors.HexColor("#e5e7eb"))
+    pdf.line(margin, 34, w - margin, 34)
+    pdf.setFillColor(colors.HexColor("#6b7280"))
+    pdf.setFont(font_regular, 8)
+    pdf.drawString(margin, 22, "Eternal Fire - Finans Raporu")
 
     pdf.save()
     return out.getvalue()
