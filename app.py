@@ -928,12 +928,12 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
         table_top = card_top - card_h - 14
         table_w = w - (margin * 2)
         col_w = {
-            "sku": 70,
-            "urun": 180,
+            "sku": 88,
+            "urun": 162,
             "adet": 55,
             "ciro": 70,
             "maliyet": 70,
-            "kar": max(60, table_w - (70 + 180 + 55 + 70 + 70)),
+            "kar": max(60, table_w - (88 + 162 + 55 + 70 + 70)),
         }
         col_left = {}
         col_right = {}
@@ -987,7 +987,7 @@ def build_month_pdf(ym: str, totals_df: pd.DataFrame, order_total_df: pd.DataFra
             kar = float(r.get("Kar", 0) or 0)
             pdf.setFillColor(colors.HexColor("#111827"))
             pdf.setFont(font_regular, 8.3)
-            pdf.drawString(col_left["sku"] + 4, y - 8, sku[:14])
+            pdf.drawString(col_left["sku"] + 4, y - 8, sku[:20])
             pdf.drawString(col_left["urun"] + 4, y - 8, name)
             pdf.drawRightString(col_right["adet"] - 4, y - 8, format(adet, ",.0f").replace(",", "."))
             pdf.drawRightString(col_right["ciro"] - 4, y - 8, money(ciro))
