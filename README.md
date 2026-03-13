@@ -12,8 +12,22 @@ Bu proje, haftalik Excel yuklemelerinden aylik satis/ciro/kar raporu uretir.
 ## Kurulum
 
 ```bash
-pip install -r requirements.txt
-streamlit run app.py
+python -m pip install -r requirements.txt
+```
+
+## Uygulamayi Baslatma
+
+Windows'ta `streamlit` komutu sistemde bulunmayabilir. Bu durumda uygulamayi asagidaki sekilde calistirin:
+
+```bash
+python -m streamlit run app.py
+```
+
+Alternatif olarak virtual env icinde ise su komut da calisir:
+
+```bash
+python -m pip install -r requirements.txt
+python -m streamlit run app.py
 ```
 
 ## Is Akisi

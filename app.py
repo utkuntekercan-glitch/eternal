@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import io
 import os
 import re
@@ -254,6 +254,7 @@ def init_db(conn: DBConn):
             id {id_col},
             week_label TEXT NOT NULL,
             order_date TEXT NOT NULL,
+            ym TEXT,
             order_no TEXT,
             order_item_key TEXT,
             customer_email TEXT,
@@ -296,6 +297,11 @@ def init_db(conn: DBConn):
     ensure_sales_column("order_no", "TEXT")
     ensure_sales_column("order_item_key", "TEXT")
     ensure_sales_column("order_total", "REAL NOT NULL DEFAULT 0")
+    ensure_sales_column("ym", "TEXT")
+    if conn.driver == "postgres":
+        conn.execute("UPDATE sales SET ym = SUBSTRING(order_date, 1, 7) WHERE COALESCE(ym, '') = '' AND COALESCE(order_date, '') <> ''")
+    else:
+        conn.execute("UPDATE sales SET ym = SUBSTR(order_date, 1, 7) WHERE COALESCE(ym, '') = '' AND COALESCE(order_date, '') <> ''")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS products (
@@ -334,6 +340,7 @@ def init_db(conn: DBConn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_free ON sales(is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_returned ON sales(is_returned)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_ym ON sales(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_free ON sales(order_date, is_free_exit)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_returned ON sales(order_date, is_returned)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_no ON sales(order_no)")
@@ -347,7 +354,7 @@ def get_ready_conn() -> DBConn:
     if "_sales_conn" not in st.session_state:
         st.session_state["_sales_conn"] = get_conn()
     conn = st.session_state["_sales_conn"]
-    schema_key = f"{conn.driver}:clean-v2"
+    schema_key = f"{conn.driver}:clean-v3"
     if st.session_state.get("_sales_schema_ready") != schema_key:
         init_db(conn)
         st.session_state["_sales_schema_ready"] = schema_key
@@ -394,13 +401,6 @@ def normalize_num(x) -> float:
 
 def is_valid_ym(ym: str) -> bool:
     return bool(re.fullmatch(r"\d{4}-\d{2}", ym.strip()))
-
-
-def month_bounds(ym: str):
-    start = f"{ym}-01"
-    y, m = map(int, ym.split("-"))
-    end = f"{y + 1:04d}-01-01" if m == 12 else f"{y:04d}-{m + 1:02d}-01"
-    return start, end
 
 
 def normalize_excel_date(value, fallback_iso: str) -> str:
@@ -532,6 +532,7 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
                 {
                     "week_label": week_label,
                     "order_date": order_date,
+                    "ym": order_date[:7],
                     "order_no": order_no,
                     "excel_row_no": int(excel_row_no),
                     "customer_email": customer_email,
@@ -584,24 +585,23 @@ def upsert_product_costs(conn: DBConn, rows):
 
 
 def refresh_monthly_summary_for_month(conn: DBConn, ym: str):
-    start, end = month_bounds(ym)
     conn.execute("DELETE FROM sales_monthly_sku WHERE ym=?", (ym,))
     conn.execute(
         """
         INSERT INTO sales_monthly_sku(ym, sku, product_name, qty, revenue)
         SELECT
-            SUBSTR(order_date, 1, 7) AS ym,
+            ? AS ym,
             sku,
             MAX(product_name) AS product_name,
             SUM(qty) AS qty,
             SUM(revenue) AS revenue
         FROM sales
-        WHERE order_date >= ? AND order_date < ?
+        WHERE ym = ?
           AND COALESCE(is_free_exit, 0) = 0
           AND COALESCE(is_returned, 0) = 0
-        GROUP BY SUBSTR(order_date, 1, 7), sku
+        GROUP BY sku
         """,
-        (start, end),
+        (ym, ym),
     )
     conn.commit()
 
@@ -612,7 +612,7 @@ def refresh_monthly_summary_all(conn: DBConn):
         """
         INSERT INTO sales_monthly_sku(ym, sku, product_name, qty, revenue)
         SELECT
-            SUBSTR(order_date, 1, 7) AS ym,
+            COALESCE(ym, SUBSTR(order_date, 1, 7)) AS ym,
             sku,
             MAX(product_name) AS product_name,
             SUM(qty) AS qty,
@@ -620,7 +620,8 @@ def refresh_monthly_summary_all(conn: DBConn):
         FROM sales
         WHERE COALESCE(is_free_exit, 0) = 0
           AND COALESCE(is_returned, 0) = 0
-        GROUP BY SUBSTR(order_date, 1, 7), sku
+          AND COALESCE(ym, '') <> ''
+        GROUP BY ym, sku
         """
     )
     conn.commit()
@@ -681,7 +682,7 @@ def get_recent_sales(_conn: DBConn, limit_n: int = 300) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT id, order_date, week_label, sku, product_name, qty, revenue
+        SELECT id, ym, order_date, week_label, sku, product_name, qty, revenue
         FROM sales
         ORDER BY id DESC
         LIMIT ?
@@ -758,9 +759,10 @@ def get_available_months(_conn: DBConn, free_only: int = 0) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
+        SELECT DISTINCT ym
         FROM sales
-        WHERE COALESCE(is_free_exit, 0) = ?
+        WHERE COALESCE(ym, '') <> ''
+          AND COALESCE(is_free_exit, 0) = ?
           AND COALESCE(is_returned, 0) = 0
         ORDER BY ym DESC
         """,
@@ -813,7 +815,6 @@ def get_dashboard_categories(_conn: DBConn) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -828,19 +829,18 @@ def get_month_products(_conn: DBConn, ym: str) -> pd.DataFrame:
         FROM sales s
         LEFT JOIN products p ON p.sku = s.sku
         LEFT JOIN product_costs c ON c.sku = s.sku
-        WHERE s.order_date >= ? AND s.order_date < ?
+        WHERE s.ym = ?
           AND COALESCE(s.is_free_exit, 0) = 0
           AND COALESCE(s.is_returned, 0) = 0
         GROUP BY s.sku
         ORDER BY "Ciro" DESC
         """,
-        (start, end),
+        (ym,),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -852,17 +852,16 @@ def get_month_totals(_conn: DBConn, ym: str) -> pd.DataFrame:
         FROM sales s
         LEFT JOIN products p ON p.sku = s.sku
         LEFT JOIN product_costs c ON c.sku = s.sku
-        WHERE s.order_date >= ? AND s.order_date < ?
+        WHERE s.ym = ?
           AND COALESCE(s.is_free_exit, 0) = 0
           AND COALESCE(s.is_returned, 0) = 0
         """,
-        (start, end),
+        (ym,),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_order_total(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -873,17 +872,16 @@ def get_month_order_total(_conn: DBConn, ym: str) -> pd.DataFrame:
                 0
             ) AS total_order_revenue
         FROM sales
-        WHERE order_date >= ? AND order_date < ?
+        WHERE ym = ?
           AND COALESCE(is_free_exit, 0) = 0
           AND COALESCE(is_returned, 0) = 0
         """,
-        (start, end),
+        (ym,),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_sku_details(_conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -896,19 +894,18 @@ def get_month_sku_details(_conn: DBConn, ym: str, sku: str) -> pd.DataFrame:
             unit_price AS "Birim Fiyat",
             revenue AS "Ciro"
         FROM sales
-        WHERE order_date >= ? AND order_date < ?
+        WHERE ym = ?
           AND COALESCE(is_free_exit, 0) = 0
           AND COALESCE(is_returned, 0) = 0
           AND sku = ?
         ORDER BY order_date, week_label
         """,
-        (start, end, sku),
+        (ym, sku),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_month_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -922,17 +919,16 @@ def get_month_free_exit_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
             unit_price AS "Birim Fiyat",
             revenue AS "Bedelsiz Tutar"
         FROM sales
-        WHERE order_date >= ? AND order_date < ?
+        WHERE ym = ?
           AND COALESCE(is_free_exit, 0) = 1
         ORDER BY order_date, week_label
         """,
-        (start, end),
+        (ym,),
     )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_free_exit_manage_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -947,11 +943,11 @@ def get_free_exit_manage_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
             revenue AS "_BedelsizTutar",
             COALESCE(free_exit_note, '') AS "Aciklama"
         FROM sales
-        WHERE order_date >= ? AND order_date < ?
+        WHERE ym = ?
           AND COALESCE(is_free_exit, 0) = 1
         ORDER BY order_date DESC, id DESC
         """,
-        (start, end),
+        (ym,),
     )
 
 
@@ -960,9 +956,10 @@ def get_returned_months(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
-        SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
+        SELECT DISTINCT ym
         FROM sales
-        WHERE COALESCE(is_returned, 0) = 1
+        WHERE COALESCE(ym, '') <> ''
+          AND COALESCE(is_returned, 0) = 1
         ORDER BY ym DESC
         """,
     )
@@ -970,7 +967,6 @@ def get_returned_months(_conn: DBConn) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_returned_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
-    start, end = month_bounds(ym)
     return df_query(
         _conn,
         """
@@ -984,11 +980,11 @@ def get_returned_rows(_conn: DBConn, ym: str) -> pd.DataFrame:
             unit_price AS "Birim Fiyat",
             revenue AS "Iade Tutar"
         FROM sales
-        WHERE order_date >= ? AND order_date < ?
+        WHERE ym = ?
           AND COALESCE(is_returned, 0) = 1
         ORDER BY order_date DESC, id DESC
         """,
-        (start, end),
+        (ym,),
     )
 
 
@@ -1247,16 +1243,7 @@ if section == "Dashboard":
             st.caption("PDF icin reportlab gerekli.")
         else:
             with st.popover("Aylik PDF Rapor"):
-                month_options_df = df_query(
-                    conn,
-                    """
-                    SELECT DISTINCT SUBSTR(order_date, 1, 7) AS ym
-                    FROM sales
-                    WHERE COALESCE(is_free_exit, 0) = 0
-                      AND COALESCE(is_returned, 0) = 0
-                    ORDER BY ym DESC
-                    """,
-                )
+                month_options_df = get_available_months(conn, free_only=0)
                 month_options = month_options_df["ym"].dropna().astype(str).tolist() if not month_options_df.empty else []
                 if not month_options:
                     month_options = [datetime.today().strftime("%Y-%m")]
@@ -1335,8 +1322,7 @@ elif section == "Veri Ekle":
             if not is_valid_ym(del_ym):
                 st.warning("Ay formati gecersiz. Ornek: 2026-02")
             else:
-                start, end = month_bounds(del_ym.strip())
-                conn.execute("DELETE FROM sales WHERE order_date >= ? AND order_date < ?", (start, end))
+                conn.execute("DELETE FROM sales WHERE ym = ?", (del_ym.strip(),))
                 conn.commit()
                 refresh_monthly_summary_for_month(conn, del_ym.strip())
                 st.cache_data.clear()
@@ -1355,7 +1341,7 @@ elif section == "Veri Ekle":
             sel_row = recent_df[recent_df["label"] == sel_label].iloc[0]
             if st.button("Secili Satiri Sil"):
                 row_id = int(sel_row["id"])
-                ym = str(sel_row["order_date"])[:7]
+                ym = str(sel_row["ym"]) if "ym" in sel_row and str(sel_row["ym"]) != "nan" else str(sel_row["order_date"])[:7]
                 conn.execute("DELETE FROM sales WHERE id=?", (row_id,))
                 conn.commit()
                 if is_valid_ym(ym):
@@ -1384,7 +1370,7 @@ elif section == "Veri Ekle":
             with st.spinner("Siliniyor..."):
                 months_df = df_query(
                     conn,
-                    "SELECT DISTINCT SUBSTR(order_date,1,7) AS ym FROM sales WHERE week_label=?",
+                    "SELECT DISTINCT ym FROM sales WHERE week_label=?",
                     (last_week,),
                 )
                 conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
@@ -1425,6 +1411,7 @@ elif section == "Veri Ekle":
                     (
                         r["week_label"],
                         r["order_date"],
+                        r["ym"],
                         r["order_no"],
                         r["order_item_key"],
                         r["customer_email"],
@@ -1441,6 +1428,9 @@ elif section == "Veri Ekle":
                     )
                     for _, r in parsed.iterrows()
                 ]
+                inserted_months = sorted({str(x).strip() for x in parsed["ym"].dropna().astype(str).tolist() if is_valid_ym(str(x).strip())})
+                affected_months = set(inserted_months)
+
                 # One-shot cleanup for previously mis-dated imports:
                 # remove rows with same order numbers before re-inserting corrected data.
                 order_nos = (
@@ -1451,9 +1441,14 @@ elif section == "Veri Ekle":
                 )
                 order_nos = sorted({x for x in order_nos.tolist() if x})
                 if order_nos:
+                    placeholders = ",".join(["?"] * len(order_nos))
+                    existing = df_query(conn, f"SELECT DISTINCT ym FROM sales WHERE order_no IN ({placeholders})", tuple(order_nos))
+                    affected_months.update([str(m).strip() for m in existing["ym"].dropna().astype(str).tolist() if is_valid_ym(str(m).strip())])
                     conn.executemany("DELETE FROM sales WHERE order_no=?", [(x,) for x in order_nos])
 
                 # Also replace old rows from same exact file hash.
+                source_months = df_query(conn, "SELECT DISTINCT ym FROM sales WHERE source_hash=?", (source_hash,))
+                affected_months.update([str(m).strip() for m in source_months["ym"].dropna().astype(str).tolist() if is_valid_ym(str(m).strip())])
                 conn.execute("DELETE FROM sales WHERE source_hash=?", (source_hash,))
                 conn.commit()
                 before_count = int(
@@ -1461,11 +1456,12 @@ elif section == "Veri Ekle":
                 )
                 conn.executemany(
                     """
-                    INSERT INTO sales(week_label, order_date, order_no, order_item_key, customer_email, is_free_exit, is_returned, sku, product_name, qty, unit_price, revenue, order_total, source_file, source_hash)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO sales(week_label, order_date, ym, order_no, order_item_key, customer_email, is_free_exit, is_returned, sku, product_name, qty, unit_price, revenue, order_total, source_file, source_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(order_item_key) DO UPDATE SET
                         week_label=excluded.week_label,
                         order_date=excluded.order_date,
+                        ym=excluded.ym,
                         order_no=excluded.order_no,
                         customer_email=excluded.customer_email,
                         is_free_exit=excluded.is_free_exit,
@@ -1483,8 +1479,9 @@ elif section == "Veri Ekle":
                 )
                 conn.commit()
                 upsert_products_from_rows(conn, parsed[["sku", "product_name"]])
-                # Rebuild monthly summary after import to guarantee report freshness.
-                refresh_monthly_summary_all(conn)
+                for m in sorted(affected_months):
+                    if is_valid_ym(m):
+                        refresh_monthly_summary_for_month(conn, m)
                 st.cache_data.clear()
                 free_rows = int(parsed["is_free_exit"].sum())
                 returned_rows = int(parsed["is_returned"].sum()) if "is_returned" in parsed.columns else 0
@@ -1676,6 +1673,7 @@ else:
             upsert_product_costs(conn, cost_rows)
             st.cache_data.clear()
             st.success("Urun master kaydedildi.")
+
 
 
 
