@@ -1368,17 +1368,32 @@ elif section == "Veri Ekle":
 
         if st.button("Son yuklemeyi sil", type="secondary"):
             with st.spinner("Siliniyor..."):
-                months_df = df_query(
+                last_upload = df_query(
                     conn,
-                    "SELECT DISTINCT ym FROM sales WHERE week_label=?",
-                    (last_week,),
+                    """
+                    SELECT DISTINCT source_hash
+                    FROM sales
+                    WHERE week_label = ? AND source_file = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (last_week, last_file),
                 )
-                conn.execute("DELETE FROM sales WHERE week_label=?", (last_week,))
-                conn.commit()
-                for m in months_df["ym"].dropna().astype(str).tolist():
-                    refresh_monthly_summary_for_month(conn, m)
-                st.cache_data.clear()
-            st.success(f"{last_week} haftasi silindi.")
+                if last_upload.empty or not str(last_upload.iloc[0]["source_hash"]).strip():
+                    st.warning("Son yukleme bilgisi bulunamadi.")
+                else:
+                    src_hash = str(last_upload.iloc[0]["source_hash"]).strip()
+                    months_df = df_query(
+                        conn,
+                        "SELECT DISTINCT ym FROM sales WHERE source_hash=?",
+                        (src_hash,),
+                    )
+                    conn.execute("DELETE FROM sales WHERE source_hash=?", (src_hash,))
+                    conn.commit()
+                    for m in months_df["ym"].dropna().astype(str).tolist():
+                        refresh_monthly_summary_for_month(conn, m)
+                    st.cache_data.clear()
+                    st.success(f"Son yukleme silindi: {last_file} ({last_week})")
             st.rerun()
 
     auto_week_label = f"{datetime.today().isocalendar().year}-W{datetime.today().isocalendar().week:02d}"
