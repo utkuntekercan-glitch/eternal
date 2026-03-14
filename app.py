@@ -621,7 +621,7 @@ def refresh_monthly_summary_all(conn: DBConn):
         WHERE COALESCE(is_free_exit, 0) = 0
           AND COALESCE(is_returned, 0) = 0
           AND COALESCE(ym, '') <> ''
-        GROUP BY ym, sku
+        GROUP BY COALESCE(ym, SUBSTR(order_date, 1, 7)), sku
         """
     )
     conn.commit()
