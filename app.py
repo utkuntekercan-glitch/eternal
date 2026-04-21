@@ -1055,15 +1055,55 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
     return df_query(
         _conn,
         """
+        WITH order_totals AS (
+            SELECT
+                order_no,
+                MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END) AS order_total,
+                SUM(revenue) AS revenue,
+                MAX(COALESCE(is_free_exit, 0)) AS is_free_exit,
+                MAX(COALESCE(is_returned, 0)) AS is_returned
+            FROM sales
+            WHERE COALESCE(order_no, '') <> ''
+            GROUP BY order_no
+        )
         SELECT
             COALESCE(
-                NULLIF(SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END), 0),
-                SUM(revenue),
+                NULLIF(SUM(
+                    CASE
+                        WHEN COALESCE(is_free_exit, 0) = 0
+                         AND COALESCE(order_total, 0) > 0
+                        THEN order_total
+                        ELSE 0
+                    END
+                ), 0),
+                SUM(CASE WHEN COALESCE(is_free_exit, 0) = 0 THEN revenue ELSE 0 END),
                 0
-            ) AS total_order_revenue
-        FROM sales
-        WHERE COALESCE(is_free_exit, 0) = 0
-          AND COALESCE(is_returned, 0) = 0
+            ) AS gross_order_revenue,
+            COALESCE(
+                NULLIF(SUM(
+                    CASE
+                        WHEN COALESCE(is_free_exit, 0) = 0
+                         AND COALESCE(is_returned, 0) = 0
+                         AND COALESCE(order_total, 0) > 0
+                        THEN order_total
+                        ELSE 0
+                    END
+                ), 0),
+                SUM(CASE WHEN COALESCE(is_free_exit, 0) = 0 AND COALESCE(is_returned, 0) = 0 THEN revenue ELSE 0 END),
+                0
+            ) AS net_order_revenue,
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN COALESCE(is_free_exit, 0) = 0
+                         AND COALESCE(is_returned, 0) = 1
+                        THEN CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE revenue END
+                        ELSE 0
+                    END
+                ),
+                0
+            ) AS returned_order_revenue
+        FROM order_totals
         """,
     )
 
@@ -1216,15 +1256,26 @@ def get_month_order_total(_conn: DBConn, ym: str) -> pd.DataFrame:
     return df_query(
         _conn,
         """
+        WITH order_totals AS (
+            SELECT
+                order_no,
+                MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END) AS order_total,
+                SUM(revenue) AS revenue,
+                MAX(COALESCE(is_free_exit, 0)) AS is_free_exit,
+                MAX(COALESCE(is_returned, 0)) AS is_returned
+            FROM sales
+            WHERE ym = ?
+              AND COALESCE(order_no, '') <> ''
+            GROUP BY order_no
+        )
         SELECT
             COALESCE(
                 NULLIF(SUM(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END), 0),
                 SUM(revenue),
                 0
             ) AS total_order_revenue
-        FROM sales
-        WHERE ym = ?
-          AND COALESCE(is_free_exit, 0) = 0
+        FROM order_totals
+        WHERE COALESCE(is_free_exit, 0) = 0
           AND COALESCE(is_returned, 0) = 0
         """,
         (ym,),
@@ -1623,19 +1674,22 @@ if section == "Dashboard":
     else:
         order_rows = int(order_rows_df.iloc[0]["order_rows"] or 0) if not order_rows_df.empty else 0
         q = float(metrics.iloc[0]["total_qty"] or 0)
-        rev = float(order_total_df.iloc[0]["total_order_revenue"] or 0) if not order_total_df.empty else float(metrics.iloc[0]["total_revenue"] or 0)
+        gross_rev = float(order_total_df.iloc[0]["gross_order_revenue"] or 0) if not order_total_df.empty else float(metrics.iloc[0]["total_revenue"] or 0)
+        net_rev = float(order_total_df.iloc[0]["net_order_revenue"] or 0) if not order_total_df.empty else float(metrics.iloc[0]["total_revenue"] or 0)
+        returned_rev = float(order_total_df.iloc[0]["returned_order_revenue"] or 0) if not order_total_df.empty else 0.0
         cost = float(metrics.iloc[0]["total_cost"] or 0)
-        profit = rev - cost
-        margin = (profit / rev * 100.0) if rev > 0 else 0.0
+        profit = net_rev - cost
+        margin = (profit / net_rev * 100.0) if net_rev > 0 else 0.0
         r1c1, r1c2, r1c3 = st.columns(3)
-        r1c1.metric("Toplam Ciro", tr_money(rev))
-        r1c2.metric("Toplam Maliyet", tr_money(cost))
-        r1c3.metric("Net Kar", tr_money(profit))
+        r1c1.metric("Toplam Satis", tr_money(gross_rev))
+        r1c2.metric("Net Satis", tr_money(net_rev))
+        r1c3.metric("Iade Tutar", tr_money(returned_rev))
 
-        r2c1, r2c2, r2c3 = st.columns(3)
+        r2c1, r2c2, r2c3, r2c4 = st.columns(4)
         r2c1.metric("Toplam Siparis", f"{order_rows:,.0f}".replace(",", "."))
         r2c2.metric("Toplam Adet", f"{q:,.0f}".replace(",", "."))
-        r2c3.metric("Kar Marji", f"%{margin:.1f}")
+        r2c3.metric("Toplam Maliyet", tr_money(cost))
+        r2c4.metric("Net Kar", f"{tr_money(profit)} | %{margin:.1f}")
         min_d = str(date_range_df.iloc[0]["min_date"] or "") if not date_range_df.empty else ""
         max_d = str(date_range_df.iloc[0]["max_date"] or "") if not date_range_df.empty else ""
         if min_d and max_d:
