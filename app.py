@@ -851,14 +851,40 @@ def dedupe_sales_by_order(conn: DBConn):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_uploads(_conn: DBConn) -> pd.DataFrame:
-    return df_query(
+    latest = df_query(
         _conn,
         """
-        SELECT week_label, source_file, COUNT(*) AS row_count, MAX(id) AS max_id
+        SELECT week_label, source_file, source_hash, id AS max_id
         FROM sales
-        GROUP BY week_label, source_file
-        ORDER BY max_id DESC
+        ORDER BY id DESC
+        LIMIT 1
         """,
+    )
+    if latest.empty:
+        return pd.DataFrame(columns=["week_label", "source_file", "source_hash", "row_count", "max_id"])
+    source_hash = str(latest.iloc[0]["source_hash"] or "").strip()
+    row_count = 0
+    if source_hash:
+        count_df = df_query(
+            _conn,
+            """
+            SELECT COUNT(*) AS row_count
+            FROM sales
+            WHERE source_hash=?
+            """,
+            (source_hash,),
+        )
+        row_count = int(count_df.iloc[0]["row_count"] or 0) if not count_df.empty else 0
+    return pd.DataFrame(
+        [
+            {
+                "week_label": latest.iloc[0]["week_label"],
+                "source_file": latest.iloc[0]["source_file"],
+                "source_hash": source_hash,
+                "row_count": row_count,
+                "max_id": latest.iloc[0]["max_id"],
+            }
+        ]
     )
 
 
@@ -1388,6 +1414,7 @@ def render_login():
     if submitted:
         if user.strip() == APP_USER and password == APP_PASSWORD:
             st.session_state["authenticated"] = True
+            st.session_state["section"] = "Veri Ekle"
             st.success("Giris basarili.")
             st.rerun()
         else:
@@ -1410,8 +1437,10 @@ with top_c2:
         st.session_state["authenticated"] = False
         st.rerun()
 
-sections = ["Dashboard", "Veri Ekle", "Aylik Rapor", "Bedelsiz Cikislar", "Iade Edilenler", "Urunler"]
-section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed")
+sections = ["Veri Ekle", "Dashboard", "Aylik Rapor", "Bedelsiz Cikislar", "Iade Edilenler", "Urunler"]
+if st.session_state.get("section") not in sections:
+    st.session_state["section"] = "Veri Ekle"
+section = st.radio("Bolum", sections, horizontal=True, label_visibility="collapsed", key="section")
 
 if section == "Dashboard":
     conn = get_ready_conn()
@@ -1548,26 +1577,16 @@ elif section == "Veri Ekle":
     if not uploads.empty:
         last_week = str(uploads.iloc[0]["week_label"])
         last_file = str(uploads.iloc[0]["source_file"])
+        last_hash = str(uploads.iloc[0].get("source_hash", "") or "").strip()
         last_rows = int(uploads.iloc[0]["row_count"])
         st.caption(f"Son yukleme: {last_week} | {last_file} | {last_rows} satir")
 
         if st.button("Son yuklemeyi sil", type="secondary"):
             with st.spinner("Siliniyor..."):
-                last_upload = df_query(
-                    conn,
-                    """
-                    SELECT DISTINCT source_hash
-                    FROM sales
-                    WHERE week_label = ? AND source_file = ?
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
-                    (last_week, last_file),
-                )
-                if last_upload.empty or not str(last_upload.iloc[0]["source_hash"]).strip():
+                if not last_hash:
                     st.warning("Son yukleme bilgisi bulunamadi.")
                 else:
-                    src_hash = str(last_upload.iloc[0]["source_hash"]).strip()
+                    src_hash = last_hash
                     months_df = df_query(
                         conn,
                         "SELECT DISTINCT ym FROM sales WHERE source_hash=?",
