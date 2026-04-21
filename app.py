@@ -41,6 +41,28 @@ APP_USER = str(st.secrets.get("APP_USER", os.getenv("APP_USER", "admin"))).strip
 APP_PASSWORD = str(st.secrets.get("APP_PASSWORD", os.getenv("APP_PASSWORD", "1234"))).strip()
 
 
+def stop_on_db_error(exc: Exception):
+    st.session_state.pop("_sales_conn", None)
+    st.session_state.pop("_sales_schema_ready", None)
+    st.session_state.pop("_sales_dedupe_done", None)
+
+    if USE_POSTGRES:
+        st.error("Veritabani baglantisi kurulamadi. Streamlit secrets icindeki DATABASE_URL degerini kontrol edin.")
+        st.info("PostgreSQL servisinin acik oldugundan, baglanti adresi/parola bilgilerinin guncel oldugundan ve gerekiyorsa SSL desteklediginden emin olun.")
+    else:
+        st.error("Yerel veritabani acilamadi. Uygulamanin sales_reports.db dosyasini olusturabildigini kontrol edin.")
+    st.caption(f"Teknik hata: {exc.__class__.__name__}")
+    detail = str(exc).strip()
+    if detail:
+        if DATABASE_URL:
+            detail = detail.replace(DATABASE_URL, "[DATABASE_URL]")
+        detail = re.sub(r"(postgres(?:ql)?://[^:\s]+:)[^@\s]+@", r"\1***@", detail, flags=re.IGNORECASE)
+        detail = re.sub(r"(password\s*=\s*)[^\s]+", r"\1***", detail, flags=re.IGNORECASE)
+        with st.expander("Teknik detay"):
+            st.code(detail[:1000])
+    st.stop()
+
+
 def inject_styles():
     st.markdown(
         """
@@ -351,18 +373,21 @@ def init_db(conn: DBConn):
 
 
 def get_ready_conn() -> DBConn:
-    if "_sales_conn" not in st.session_state:
-        st.session_state["_sales_conn"] = get_conn()
-    conn = st.session_state["_sales_conn"]
-    schema_key = f"{conn.driver}:clean-v3"
-    if st.session_state.get("_sales_schema_ready") != schema_key:
-        init_db(conn)
-        st.session_state["_sales_schema_ready"] = schema_key
-    if not st.session_state.get("_sales_dedupe_done"):
-        dedupe_sales_by_order(conn)
-        refresh_monthly_summary_all(conn)
-        st.session_state["_sales_dedupe_done"] = True
-    return conn
+    try:
+        if "_sales_conn" not in st.session_state:
+            st.session_state["_sales_conn"] = get_conn()
+        conn = st.session_state["_sales_conn"]
+        schema_key = f"{conn.driver}:clean-v3"
+        if st.session_state.get("_sales_schema_ready") != schema_key:
+            init_db(conn)
+            st.session_state["_sales_schema_ready"] = schema_key
+        if not st.session_state.get("_sales_dedupe_done"):
+            dedupe_sales_by_order(conn)
+            refresh_monthly_summary_all(conn)
+            st.session_state["_sales_dedupe_done"] = True
+        return conn
+    except Exception as exc:
+        stop_on_db_error(exc)
 
 
 def df_query(conn: DBConn, q: str, params=()):
