@@ -816,8 +816,8 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
 
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     ws = wb.active
-    rows = parse_order_detail_rows(ws, week_label)
     order_registry_rows = parse_order_registry_rows(ws)
+    rows = parse_order_detail_rows(ws, week_label)
     if not rows:
         rows = parse_product_summary_rows(ws, week_label, order_date_iso)
     df = pd.DataFrame(rows)
@@ -1750,8 +1750,14 @@ elif section == "Veri Ekle":
             source_file = uploaded.name
             parsed = parse_uploaded_excel(bytes_, auto_week_label, datetime.today().date().isoformat())
             order_registry_rows = parsed.attrs.get("order_registry_rows", [])
+            upsert_order_registry(conn, order_registry_rows, source_file, source_hash)
             if parsed.empty:
-                st.error("Islenecek satir bulunamadi.")
+                order_registry_count = len({str(o.get("order_no", "") or "").strip() for o in order_registry_rows if str(o.get("order_no", "") or "").strip()})
+                if order_registry_count:
+                    st.success(f"Ikas siparis sayimi guncellendi: {order_registry_count}")
+                    st.cache_data.clear()
+                else:
+                    st.error("Islenecek satir bulunamadi.")
             else:
                 parsed["source_file"] = source_file
                 parsed["source_hash"] = source_hash
@@ -1838,7 +1844,6 @@ elif section == "Veri Ekle":
                     rows,
                 )
                 conn.commit()
-                upsert_order_registry(conn, order_registry_rows, source_file, source_hash)
                 upsert_products_from_rows(conn, parsed[["sku", "product_name"]])
                 for m in sorted(affected_months):
                     if is_valid_ym(m):
