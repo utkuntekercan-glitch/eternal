@@ -301,6 +301,7 @@ def init_db(conn: DBConn):
             qty REAL NOT NULL,
             unit_price REAL NOT NULL,
             revenue REAL NOT NULL,
+            refund_amount REAL NOT NULL DEFAULT 0,
             order_total REAL NOT NULL DEFAULT 0,
             source_file TEXT NOT NULL,
             source_hash TEXT NOT NULL
@@ -332,6 +333,7 @@ def init_db(conn: DBConn):
     ensure_sales_column("is_returned", "INTEGER NOT NULL DEFAULT 0")
     ensure_sales_column("order_no", "TEXT")
     ensure_sales_column("order_item_key", "TEXT")
+    ensure_sales_column("refund_amount", "REAL NOT NULL DEFAULT 0")
     ensure_sales_column("order_total", "REAL NOT NULL DEFAULT 0")
     ensure_sales_column("ym", "TEXT")
     if conn.driver == "postgres":
@@ -421,7 +423,7 @@ def get_ready_conn() -> DBConn:
         if "_sales_conn" not in st.session_state:
             st.session_state["_sales_conn"] = get_conn()
         conn = st.session_state["_sales_conn"]
-        schema_key = f"{conn.driver}:clean-v4"
+        schema_key = f"{conn.driver}:clean-v5"
         if st.session_state.get("_sales_schema_ready") != schema_key:
             init_db(conn)
             st.session_state["_sales_schema_ready"] = schema_key
@@ -642,6 +644,7 @@ def parse_order_detail_rows(ws, week_label: str) -> list[dict]:
     product_idx = header_idx_or(18, first_header_idx(headers, "urun adi", "urun"))
     unit_price_idx = header_idx_or(20, first_header_idx(headers, "urun satis fiyati", "birim fiyat"))
     order_total_idx = header_idx_or(15, first_header_idx(headers, "toplam"))
+    refund_amount_idx = find_header_idx(headers, ("iade", "tutari"), ("doviz",))
     sku_idx = header_idx_or(24, first_header_idx(headers, "urun sku", "sku"))
     order_context = {}
     rows = []
@@ -680,6 +683,7 @@ def parse_order_detail_rows(ws, week_label: str) -> list[dict]:
         product_name = "" if row_value(r, product_idx) is None else str(row_value(r, product_idx)).strip()
         unit_price = normalize_num(row_value(r, unit_price_idx))
         order_total = normalize_num(row_value(r, order_total_idx))
+        refund_amount = normalize_num(row_value(r, refund_amount_idx)) if refund_amount_idx is not None else 0.0
         sku = "" if row_value(r, sku_idx) is None else str(row_value(r, sku_idx)).strip()
         if sku and product_name and qty > 0:
             rows.append(
@@ -697,6 +701,7 @@ def parse_order_detail_rows(ws, week_label: str) -> list[dict]:
                     "qty": float(qty),
                     "unit_price": float(unit_price),
                     "revenue": float(qty) * float(unit_price),
+                    "refund_amount": float(refund_amount),
                     "order_total": float(order_total),
                 }
             )
@@ -817,6 +822,7 @@ def parse_product_summary_rows(ws, week_label: str, order_date_iso: str) -> list
                 "qty": float(qty),
                 "unit_price": float(unit_price),
                 "revenue": float(revenue),
+                "refund_amount": 0.0,
                 "order_total": float(revenue),
             }
         )
@@ -1132,6 +1138,7 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
                 order_no,
                 MAX(CASE WHEN COALESCE(order_total, 0) > 0 THEN order_total ELSE 0 END) AS order_total,
                 SUM(revenue) AS revenue,
+                SUM(COALESCE(refund_amount, 0)) AS refund_amount,
                 MAX(COALESCE(is_free_exit, 0)) AS is_free_exit,
                 MAX(COALESCE(is_returned, 0)) AS is_returned
             FROM sales
@@ -1171,6 +1178,7 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
             ) AS net_order_revenue,
             COALESCE(
                 NULLIF((SELECT summary_refund_amount FROM summary_metrics), 0),
+                NULLIF(SUM(CASE WHEN COALESCE(is_free_exit, 0) = 0 THEN COALESCE(refund_amount, 0) ELSE 0 END), 0),
                 SUM(
                     CASE
                         WHEN COALESCE(is_free_exit, 0) = 0
@@ -1931,6 +1939,7 @@ elif section == "Veri Ekle":
                         float(r["qty"]),
                         float(r["unit_price"]),
                         float(r["revenue"]),
+                        float(r.get("refund_amount", 0) or 0),
                         float(r.get("order_total", 0) or 0),
                         r["source_file"],
                         r["source_hash"],
@@ -1964,8 +1973,8 @@ elif section == "Veri Ekle":
                 )
                 conn.executemany(
                     """
-                    INSERT INTO sales(week_label, order_date, ym, order_no, order_item_key, customer_email, is_free_exit, is_returned, sku, product_name, qty, unit_price, revenue, order_total, source_file, source_hash)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT INTO sales(week_label, order_date, ym, order_no, order_item_key, customer_email, is_free_exit, is_returned, sku, product_name, qty, unit_price, revenue, refund_amount, order_total, source_file, source_hash)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(order_item_key) DO UPDATE SET
                         week_label=excluded.week_label,
                         order_date=excluded.order_date,
@@ -1979,6 +1988,7 @@ elif section == "Veri Ekle":
                         qty=excluded.qty,
                         unit_price=excluded.unit_price,
                         revenue=excluded.revenue,
+                        refund_amount=excluded.refund_amount,
                         order_total=excluded.order_total,
                         source_file=excluded.source_file,
                         source_hash=excluded.source_hash
