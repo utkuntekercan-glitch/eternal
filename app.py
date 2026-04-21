@@ -371,6 +371,22 @@ def init_db(conn: DBConn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_registry (
+            order_no TEXT PRIMARY KEY,
+            order_date TEXT,
+            ym TEXT,
+            customer_email TEXT,
+            payment_status TEXT,
+            is_free_exit INTEGER NOT NULL DEFAULT 0,
+            is_returned INTEGER NOT NULL DEFAULT 0,
+            source_file TEXT,
+            source_hash TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_week ON sales(week_label)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
@@ -383,6 +399,8 @@ def init_db(conn: DBConn):
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_sales_order_item_key ON sales(order_item_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_monthly_ym ON sales_monthly_sku(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_product_costs_sku ON product_costs(sku)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_order_registry_ym ON order_registry(ym)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_order_registry_source_hash ON order_registry(source_hash)")
     conn.commit()
 
 
@@ -673,6 +691,76 @@ def parse_order_detail_rows(ws, week_label: str) -> list[dict]:
     return rows
 
 
+def parse_order_registry_rows(ws) -> list[dict]:
+    headers = get_header_map(ws)
+    if not headers:
+        return []
+
+    order_no_idx = find_order_no_col(ws)
+    if order_no_idx is None:
+        return []
+
+    email_idx = header_idx_or(4, first_header_idx(headers, "e-posta", "email"))
+    status_idx = header_idx_or(6, find_header_idx(headers, ("siparis", "odeme", "durumu")))
+    order_date_idx = header_idx_or(7, find_header_idx(headers, ("siparis", "tarihi")))
+
+    orders = {}
+    order_context = {}
+    for r in ws.iter_rows(min_row=2):
+        raw_order_no = row_value(r, order_no_idx)
+        if raw_order_no is None:
+            continue
+        if isinstance(raw_order_no, float) and raw_order_no.is_integer():
+            order_no = str(int(raw_order_no))
+        else:
+            order_no = str(raw_order_no).strip()
+        if not order_no:
+            continue
+
+        context = order_context.get(order_no, {})
+        customer_email = "" if row_value(r, email_idx) is None else str(row_value(r, email_idx)).strip().lower()
+        if not customer_email:
+            customer_email = str(context.get("customer_email", ""))
+        status_value = row_value(r, status_idx)
+        if (status_value is None or str(status_value).strip() == "") and context:
+            status_value = context.get("status_value")
+        payment_status = "" if status_value is None else str(status_value).strip()
+        order_date = normalize_excel_date(row_value(r, order_date_idx), "")
+        if not order_date:
+            order_date = str(context.get("order_date", ""))
+
+        if order_date or payment_status or customer_email:
+            order_context[order_no] = {
+                "customer_email": customer_email,
+                "status_value": status_value,
+                "order_date": order_date,
+            }
+        if order_no not in orders:
+            orders[order_no] = {
+                "order_no": order_no,
+                "order_date": order_date,
+                "ym": order_date[:7] if order_date else "",
+                "customer_email": customer_email,
+                "payment_status": payment_status,
+                "is_free_exit": 1 if customer_email == FREE_EXIT_EMAIL else 0,
+                "is_returned": 1 if is_returned_status(status_value) else 0,
+            }
+        else:
+            current = orders[order_no]
+            if not current.get("order_date") and order_date:
+                current["order_date"] = order_date
+                current["ym"] = order_date[:7]
+            if not current.get("customer_email") and customer_email:
+                current["customer_email"] = customer_email
+                current["is_free_exit"] = 1 if customer_email == FREE_EXIT_EMAIL else 0
+            if not current.get("payment_status") and payment_status:
+                current["payment_status"] = payment_status
+            if is_returned_status(status_value):
+                current["is_returned"] = 1
+
+    return list(orders.values())
+
+
 def parse_product_summary_rows(ws, week_label: str, order_date_iso: str) -> list[dict]:
     headers = get_header_map(ws)
     product_idx = headers.get("urun")
@@ -729,9 +817,12 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     ws = wb.active
     rows = parse_order_detail_rows(ws, week_label)
+    order_registry_rows = parse_order_registry_rows(ws)
     if not rows:
         rows = parse_product_summary_rows(ws, week_label, order_date_iso)
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    df.attrs["order_registry_rows"] = order_registry_rows
+    return df
 
 
 def upsert_products_from_rows(conn: DBConn, rows_df: pd.DataFrame):
@@ -746,6 +837,46 @@ def upsert_products_from_rows(conn: DBConn, rows_df: pd.DataFrame):
         VALUES(?,?,?)
         ON CONFLICT(sku) DO UPDATE SET
             product_name=excluded.product_name,
+            updated_at=excluded.updated_at
+        """,
+        payload,
+    )
+    conn.commit()
+
+
+def upsert_order_registry(conn: DBConn, orders: list[dict], source_file: str, source_hash: str):
+    if not orders:
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    payload = [
+        (
+            str(o.get("order_no", "") or "").strip(),
+            str(o.get("order_date", "") or "").strip(),
+            str(o.get("ym", "") or "").strip(),
+            str(o.get("customer_email", "") or "").strip(),
+            str(o.get("payment_status", "") or "").strip(),
+            int(o.get("is_free_exit", 0) or 0),
+            int(o.get("is_returned", 0) or 0),
+            source_file,
+            source_hash,
+            now,
+        )
+        for o in orders
+        if str(o.get("order_no", "") or "").strip()
+    ]
+    conn.executemany(
+        """
+        INSERT INTO order_registry(order_no, order_date, ym, customer_email, payment_status, is_free_exit, is_returned, source_file, source_hash, updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(order_no) DO UPDATE SET
+            order_date=excluded.order_date,
+            ym=excluded.ym,
+            customer_email=excluded.customer_email,
+            payment_status=excluded.payment_status,
+            is_free_exit=excluded.is_free_exit,
+            is_returned=excluded.is_returned,
+            source_file=excluded.source_file,
+            source_hash=excluded.source_hash,
             updated_at=excluded.updated_at
         """,
         payload,
@@ -939,13 +1070,22 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_dashboard_order_rows(_conn: DBConn) -> pd.DataFrame:
+    registry_count = df_query(
+        _conn,
+        """
+        SELECT COUNT(DISTINCT order_no) AS order_rows
+        FROM order_registry
+        WHERE COALESCE(order_no, '') <> ''
+        """,
+    )
+    if not registry_count.empty and int(registry_count.iloc[0]["order_rows"] or 0) > 0:
+        return registry_count
     return df_query(
         _conn,
         """
-        SELECT COUNT(*) AS order_rows
+        SELECT COUNT(DISTINCT order_no) AS order_rows
         FROM sales
-        WHERE COALESCE(is_free_exit, 0) = 0
-          AND COALESCE(is_returned, 0) = 0
+        WHERE COALESCE(order_no, '') <> ''
         """,
     )
 
@@ -1593,6 +1733,7 @@ elif section == "Veri Ekle":
                         (src_hash,),
                     )
                     conn.execute("DELETE FROM sales WHERE source_hash=?", (src_hash,))
+                    conn.execute("DELETE FROM order_registry WHERE source_hash=?", (src_hash,))
                     conn.commit()
                     for m in months_df["ym"].dropna().astype(str).tolist():
                         refresh_monthly_summary_for_month(conn, m)
@@ -1608,6 +1749,7 @@ elif section == "Veri Ekle":
             source_hash = hashlib.sha256(bytes_).hexdigest()
             source_file = uploaded.name
             parsed = parse_uploaded_excel(bytes_, auto_week_label, datetime.today().date().isoformat())
+            order_registry_rows = parsed.attrs.get("order_registry_rows", [])
             if parsed.empty:
                 st.error("Islenecek satir bulunamadi.")
             else:
@@ -1696,6 +1838,7 @@ elif section == "Veri Ekle":
                     rows,
                 )
                 conn.commit()
+                upsert_order_registry(conn, order_registry_rows, source_file, source_hash)
                 upsert_products_from_rows(conn, parsed[["sku", "product_name"]])
                 for m in sorted(affected_months):
                     if is_valid_ym(m):
@@ -1703,6 +1846,7 @@ elif section == "Veri Ekle":
                 st.cache_data.clear()
                 free_rows = int(parsed["is_free_exit"].sum())
                 returned_rows = int(parsed["is_returned"].sum()) if "is_returned" in parsed.columns else 0
+                order_registry_count = len({str(o.get("order_no", "") or "").strip() for o in order_registry_rows if str(o.get("order_no", "") or "").strip()})
                 after_count = int(
                     df_query(conn, "SELECT COUNT(*) AS n FROM sales WHERE source_hash=?", (source_hash,)).iloc[0]["n"]
                 )
@@ -1710,11 +1854,11 @@ elif section == "Veri Ekle":
                 skipped_rows = max(0, len(rows) - inserted_rows)
                 if inserted_rows == 0:
                     st.warning(
-                        f"Yeni kayit eklenmedi. Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows} | Iade: {returned_rows}"
+                        f"Yeni kayit eklenmedi. Ikas siparis: {order_registry_count} | Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows} | Iade: {returned_rows}"
                     )
                 else:
                     st.success(
-                        f"Yukleme tamamlandi. Eklenen: {inserted_rows} | Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows} | Iade: {returned_rows}"
+                        f"Yukleme tamamlandi. Ikas siparis: {order_registry_count} | Eklenen: {inserted_rows} | Atlanan tekrar: {skipped_rows} | Bedelsiz cikis: {free_rows} | Iade: {returned_rows}"
                     )
 
 elif section == "Aylik Rapor":
