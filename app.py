@@ -387,6 +387,17 @@ def init_db(conn: DBConn):
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_metrics (
+            metric_key TEXT PRIMARY KEY,
+            metric_value REAL NOT NULL DEFAULT 0,
+            source_file TEXT,
+            source_hash TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_order_date ON sales(order_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_week ON sales(week_label)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sales_sku ON sales(sku)")
@@ -401,6 +412,7 @@ def init_db(conn: DBConn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_product_costs_sku ON product_costs(sku)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_order_registry_ym ON order_registry(ym)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_order_registry_source_hash ON order_registry(source_hash)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_app_metrics_source_hash ON app_metrics(source_hash)")
     conn.commit()
 
 
@@ -409,7 +421,7 @@ def get_ready_conn() -> DBConn:
         if "_sales_conn" not in st.session_state:
             st.session_state["_sales_conn"] = get_conn()
         conn = st.session_state["_sales_conn"]
-        schema_key = f"{conn.driver}:clean-v3"
+        schema_key = f"{conn.driver}:clean-v4"
         if st.session_state.get("_sales_schema_ready") != schema_key:
             init_db(conn)
             st.session_state["_sales_schema_ready"] = schema_key
@@ -811,6 +823,41 @@ def parse_product_summary_rows(ws, week_label: str, order_date_iso: str) -> list
     return rows
 
 
+def parse_product_summary_metrics(ws) -> dict[str, float]:
+    headers = get_header_map(ws)
+    product_idx = headers.get("urun")
+    type_idx = find_header_idx(headers, ("siparis", "kalem", "tipi"))
+    refund_idx = find_header_idx(headers, ("iade", "tutari"), ("doviz",))
+    net_sales_idx = find_header_idx(headers, ("net", "satis", "tutari"), ("doviz",))
+    gross_sales_idx = find_header_idx(headers, ("brut", "satis", "tutari"), ("doviz",))
+    sales_count_idx = first_header_idx(headers, "satislar")
+
+    if product_idx is None or refund_idx is None:
+        return {}
+
+    metrics = {
+        "ikas_summary_refund_amount": 0.0,
+        "ikas_summary_net_sales": 0.0,
+        "ikas_summary_gross_sales": 0.0,
+        "ikas_summary_sales_count": 0.0,
+    }
+    found_product_row = False
+    for r in ws.iter_rows(min_row=2):
+        product_name = "" if row_value(r, product_idx) is None else str(row_value(r, product_idx)).strip()
+        item_type = normalize_text_safe(row_value(r, type_idx)) if type_idx is not None else "urun"
+        if not product_name or (item_type and item_type != "urun"):
+            continue
+        found_product_row = True
+        metrics["ikas_summary_refund_amount"] += normalize_num(row_value(r, refund_idx))
+        if net_sales_idx is not None:
+            metrics["ikas_summary_net_sales"] += normalize_num(row_value(r, net_sales_idx))
+        if gross_sales_idx is not None:
+            metrics["ikas_summary_gross_sales"] += normalize_num(row_value(r, gross_sales_idx))
+        if sales_count_idx is not None:
+            metrics["ikas_summary_sales_count"] += normalize_num(row_value(r, sales_count_idx))
+    return metrics if found_product_row else {}
+
+
 def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
     from openpyxl import load_workbook
 
@@ -818,10 +865,12 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
     ws = wb.active
     order_registry_rows = parse_order_registry_rows(ws)
     rows = parse_order_detail_rows(ws, week_label)
-    if not rows:
+    summary_metrics = parse_product_summary_metrics(ws)
+    if not rows and not summary_metrics:
         rows = parse_product_summary_rows(ws, week_label, order_date_iso)
     df = pd.DataFrame(rows)
     df.attrs["order_registry_rows"] = order_registry_rows
+    df.attrs["summary_metrics"] = summary_metrics
     return df
 
 
@@ -875,6 +924,29 @@ def upsert_order_registry(conn: DBConn, orders: list[dict], source_file: str, so
             payment_status=excluded.payment_status,
             is_free_exit=excluded.is_free_exit,
             is_returned=excluded.is_returned,
+            source_file=excluded.source_file,
+            source_hash=excluded.source_hash,
+            updated_at=excluded.updated_at
+        """,
+        payload,
+    )
+    conn.commit()
+
+
+def upsert_app_metrics(conn: DBConn, metrics: dict[str, float], source_file: str, source_hash: str):
+    if not metrics:
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    payload = [
+        (str(key), float(value or 0), source_file, source_hash, now)
+        for key, value in metrics.items()
+    ]
+    conn.executemany(
+        """
+        INSERT INTO app_metrics(metric_key, metric_value, source_file, source_hash, updated_at)
+        VALUES(?,?,?,?,?)
+        ON CONFLICT(metric_key) DO UPDATE SET
+            metric_value=excluded.metric_value,
             source_file=excluded.source_file,
             source_hash=excluded.source_hash,
             updated_at=excluded.updated_at
@@ -1065,6 +1137,11 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
             FROM sales
             WHERE COALESCE(order_no, '') <> ''
             GROUP BY order_no
+        ),
+        summary_metrics AS (
+            SELECT
+                MAX(CASE WHEN metric_key = 'ikas_summary_refund_amount' THEN metric_value ELSE 0 END) AS summary_refund_amount
+            FROM app_metrics
         )
         SELECT
             COALESCE(
@@ -1093,6 +1170,7 @@ def get_dashboard_order_total(_conn: DBConn) -> pd.DataFrame:
                 0
             ) AS net_order_revenue,
             COALESCE(
+                NULLIF((SELECT summary_refund_amount FROM summary_metrics), 0),
                 SUM(
                     CASE
                         WHEN COALESCE(is_free_exit, 0) = 0
@@ -1762,6 +1840,8 @@ elif section == "Veri Ekle":
         if st.button("Tum Verileri Sil", type="secondary", disabled=not wipe_ok):
             conn.execute("DELETE FROM sales")
             conn.execute("DELETE FROM sales_monthly_sku")
+            conn.execute("DELETE FROM order_registry")
+            conn.execute("DELETE FROM app_metrics")
             conn.commit()
             st.cache_data.clear()
             st.success("Tum satis verileri silindi.")
@@ -1788,6 +1868,7 @@ elif section == "Veri Ekle":
                     )
                     conn.execute("DELETE FROM sales WHERE source_hash=?", (src_hash,))
                     conn.execute("DELETE FROM order_registry WHERE source_hash=?", (src_hash,))
+                    conn.execute("DELETE FROM app_metrics WHERE source_hash=?", (src_hash,))
                     conn.commit()
                     for m in months_df["ym"].dropna().astype(str).tolist():
                         refresh_monthly_summary_for_month(conn, m)
@@ -1804,10 +1885,17 @@ elif section == "Veri Ekle":
             source_file = uploaded.name
             parsed = parse_uploaded_excel(bytes_, auto_week_label, datetime.today().date().isoformat())
             order_registry_rows = parsed.attrs.get("order_registry_rows", [])
+            summary_metrics = parsed.attrs.get("summary_metrics", {})
             upsert_order_registry(conn, order_registry_rows, source_file, source_hash)
+            upsert_app_metrics(conn, summary_metrics, source_file, source_hash)
             if parsed.empty:
                 order_registry_count = len({str(o.get("order_no", "") or "").strip() for o in order_registry_rows if str(o.get("order_no", "") or "").strip()})
-                if order_registry_count:
+                if summary_metrics:
+                    st.success(
+                        f"Ikas ozet metrikleri guncellendi. Iade Tutar: {tr_money(summary_metrics.get('ikas_summary_refund_amount', 0))}"
+                    )
+                    st.cache_data.clear()
+                elif order_registry_count:
                     st.success(f"Ikas siparis sayimi guncellendi: {order_registry_count}")
                     st.cache_data.clear()
                 else:
