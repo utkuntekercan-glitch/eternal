@@ -476,6 +476,8 @@ def normalize_text_safe(s: str) -> str:
     txt = txt.replace("þ", "s").replace("ð", "g")
     txt = txt.replace("Ã¾", "s").replace("Ã°", "g")
     txt = txt.replace("ı", "i").replace("Ä±", "i")
+    txt = txt.translate(str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU"))
+    txt = txt.replace("\u0131", "i")
     txt = unicodedata.normalize("NFKD", txt)
     txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
     return txt
@@ -524,34 +526,100 @@ def is_returned_status(v) -> bool:
     return "iade edildi" in t
 
 
-def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
-    from openpyxl import load_workbook
+def row_value(row, idx: int, default=None):
+    if idx is None or idx < 0 or idx >= len(row):
+        return default
+    return row[idx].value
 
-    wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
-    ws = wb.active
+
+def get_header_map(ws) -> dict[str, int]:
+    try:
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True))
+    except Exception:
+        return {}
+    headers = {}
+    for i, value in enumerate(header_row):
+        key = " ".join(normalize_text_safe(value).split())
+        if key and key not in headers:
+            headers[key] = i
+    return headers
+
+
+def find_header_idx(headers: dict[str, int], required: tuple[str, ...], forbidden: tuple[str, ...] = ()) -> int | None:
+    for header, idx in headers.items():
+        if all(token in header for token in required) and not any(token in header for token in forbidden):
+            return idx
+    return None
+
+
+def first_header_idx(headers: dict[str, int], *names: str) -> int | None:
+    for name in names:
+        idx = headers.get(name)
+        if idx is not None:
+            return idx
+    return None
+
+
+def header_idx_or(default: int, idx: int | None) -> int:
+    return default if idx is None else idx
+
+
+def make_summary_sku(product_name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", normalize_text_safe(product_name)).strip("-").upper()
+    if not slug:
+        return ""
+    return f"SUMMARY-{slug[:64]}"
+
+
+def parse_order_detail_rows(ws, week_label: str) -> list[dict]:
+    headers = get_header_map(ws)
     order_no_idx = find_order_no_col(ws)
+    email_idx = header_idx_or(4, first_header_idx(headers, "e-posta", "email"))
+    status_idx = header_idx_or(6, find_header_idx(headers, ("siparis", "odeme", "durumu")))
+    order_date_idx = header_idx_or(7, find_header_idx(headers, ("siparis", "tarihi")))
+    qty_idx = header_idx_or(17, first_header_idx(headers, "urun sayisi"))
+    product_idx = header_idx_or(18, first_header_idx(headers, "urun adi", "urun"))
+    unit_price_idx = header_idx_or(20, first_header_idx(headers, "urun satis fiyati", "birim fiyat"))
+    order_total_idx = header_idx_or(15, first_header_idx(headers, "toplam"))
+    sku_idx = header_idx_or(24, first_header_idx(headers, "urun sku", "sku"))
+    order_context = {}
     rows = []
     for excel_row_no, r in enumerate(ws.iter_rows(min_row=2), start=2):
-        customer_email = "" if r[4].value is None else str(r[4].value).strip().lower()  # E
-        is_returned = 1 if is_returned_status(r[6].value) else 0  # G
-        is_free_exit = 1 if customer_email == FREE_EXIT_EMAIL else 0
-        if (not is_paid_status(r[6].value)) and (is_free_exit == 0):  # G
-            continue
-        raw_order_no = r[order_no_idx].value if order_no_idx is not None and order_no_idx < len(r) else None
+        raw_order_no = row_value(r, order_no_idx)
         if raw_order_no is None:
             order_no = ""
         elif isinstance(raw_order_no, float) and raw_order_no.is_integer():
             order_no = str(int(raw_order_no))
         else:
             order_no = str(raw_order_no).strip()
-        order_date = normalize_excel_date(r[7].value, "")  # H
+
+        context = order_context.get(order_no, {}) if order_no else {}
+        customer_email = "" if row_value(r, email_idx) is None else str(row_value(r, email_idx)).strip().lower()
+        if not customer_email:
+            customer_email = str(context.get("customer_email", ""))
+        status_value = row_value(r, status_idx)
+        if (status_value is None or str(status_value).strip() == "") and context:
+            status_value = context.get("status_value")
+        is_returned = 1 if is_returned_status(status_value) else 0
+        is_free_exit = 1 if customer_email == FREE_EXIT_EMAIL else 0
+        if (not is_paid_status(status_value)) and (is_free_exit == 0):
+            continue
+        order_date = normalize_excel_date(row_value(r, order_date_idx), "")
+        if not order_date:
+            order_date = str(context.get("order_date", ""))
         if not order_date:
             continue
-        qty = normalize_num(r[17].value)  # R
-        product_name = "" if r[18].value is None else str(r[18].value).strip()  # S
-        unit_price = normalize_num(r[20].value)  # U
-        order_total = normalize_num(r[15].value)  # P
-        sku = "" if r[24].value is None else str(r[24].value).strip()  # Y
+        if order_no:
+            order_context[order_no] = {
+                "customer_email": customer_email,
+                "status_value": status_value,
+                "order_date": order_date,
+            }
+        qty = normalize_num(row_value(r, qty_idx))
+        product_name = "" if row_value(r, product_idx) is None else str(row_value(r, product_idx)).strip()
+        unit_price = normalize_num(row_value(r, unit_price_idx))
+        order_total = normalize_num(row_value(r, order_total_idx))
+        sku = "" if row_value(r, sku_idx) is None else str(row_value(r, sku_idx)).strip()
         if sku and product_name and qty > 0:
             rows.append(
                 {
@@ -571,6 +639,67 @@ def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str
                     "order_total": float(order_total),
                 }
             )
+    return rows
+
+
+def parse_product_summary_rows(ws, week_label: str, order_date_iso: str) -> list[dict]:
+    headers = get_header_map(ws)
+    product_idx = headers.get("urun")
+    type_idx = find_header_idx(headers, ("siparis", "kalem", "tipi"))
+    qty_idx = find_header_idx(headers, ("sepetteki", "toplam", "urun", "sayisi"))
+    revenue_idx = find_header_idx(headers, ("net", "satis", "tutari"), ("doviz",))
+    avg_price_idx = find_header_idx(headers, ("ortalama", "satis", "fiyati"), ("doviz",))
+
+    if product_idx is None or qty_idx is None or revenue_idx is None:
+        return []
+
+    rows = []
+    for excel_row_no, r in enumerate(ws.iter_rows(min_row=2), start=2):
+        product_name = "" if row_value(r, product_idx) is None else str(row_value(r, product_idx)).strip()
+        item_type = normalize_text_safe(row_value(r, type_idx)) if type_idx is not None else "urun"
+        if not product_name or (item_type and item_type != "urun"):
+            continue
+
+        qty = normalize_num(row_value(r, qty_idx))
+        revenue = normalize_num(row_value(r, revenue_idx))
+        unit_price = normalize_num(row_value(r, avg_price_idx)) if avg_price_idx is not None else 0.0
+        if unit_price <= 0 and qty > 0:
+            unit_price = revenue / qty
+
+        sku = make_summary_sku(product_name)
+        if not sku or qty <= 0:
+            continue
+
+        order_date = normalize_excel_date(order_date_iso, datetime.today().date().isoformat())
+        rows.append(
+            {
+                "week_label": week_label,
+                "order_date": order_date,
+                "ym": order_date[:7],
+                "order_no": f"summary:{order_date}:{sku}",
+                "excel_row_no": int(excel_row_no),
+                "customer_email": "",
+                "is_free_exit": 0,
+                "is_returned": 0,
+                "sku": sku,
+                "product_name": product_name,
+                "qty": float(qty),
+                "unit_price": float(unit_price),
+                "revenue": float(revenue),
+                "order_total": float(revenue),
+            }
+        )
+    return rows
+
+
+def parse_uploaded_excel(file_bytes: bytes, week_label: str, order_date_iso: str) -> pd.DataFrame:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+    ws = wb.active
+    rows = parse_order_detail_rows(ws, week_label)
+    if not rows:
+        rows = parse_product_summary_rows(ws, week_label, order_date_iso)
     return pd.DataFrame(rows)
 
 
