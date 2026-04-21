@@ -395,10 +395,6 @@ def get_ready_conn() -> DBConn:
         if st.session_state.get("_sales_schema_ready") != schema_key:
             init_db(conn)
             st.session_state["_sales_schema_ready"] = schema_key
-        if not st.session_state.get("_sales_dedupe_done"):
-            dedupe_sales_by_order(conn)
-            refresh_monthly_summary_all(conn)
-            st.session_state["_sales_dedupe_done"] = True
         return conn
     except Exception as exc:
         stop_on_db_error(exc)
