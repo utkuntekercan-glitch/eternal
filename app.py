@@ -17,6 +17,11 @@ except Exception:
     psycopg2 = None
 
 try:
+    from psycopg2.extras import execute_batch
+except Exception:
+    execute_batch = None
+
+try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.pdfbase import pdfmetrics
@@ -220,9 +225,15 @@ class DBConn:
             return cur
 
     def executemany(self, q: str, seq):
+        rows = [tuple(x) for x in seq]
+        if not rows:
+            return None
         try:
             cur = self._conn.cursor()
-            cur.executemany(self._sql(q), [tuple(x) for x in seq])
+            if self.driver == "postgres" and execute_batch is not None:
+                execute_batch(cur, self._sql(q), rows, page_size=500)
+            else:
+                cur.executemany(self._sql(q), rows)
             return cur
         except Exception:
             try:
@@ -230,7 +241,10 @@ class DBConn:
             except Exception:
                 pass
             cur = self._conn.cursor()
-            cur.executemany(self._sql(q), [tuple(x) for x in seq])
+            if self.driver == "postgres" and execute_batch is not None:
+                execute_batch(cur, self._sql(q), rows, page_size=500)
+            else:
+                cur.executemany(self._sql(q), rows)
             return cur
 
     def commit(self):
@@ -395,6 +409,27 @@ def df_query(conn: DBConn, q: str, params=()):
     rows = cur.fetchall()
     cols = [c[0] for c in cur.description] if cur.description else []
     return pd.DataFrame(rows, columns=cols)
+
+
+def iter_chunks(values, chunk_size: int = 500):
+    for start in range(0, len(values), chunk_size):
+        yield values[start:start + chunk_size]
+
+
+def select_months_for_order_nos(conn: DBConn, order_nos: list[str]) -> pd.DataFrame:
+    frames = []
+    for chunk in iter_chunks(order_nos):
+        placeholders = ",".join(["?"] * len(chunk))
+        frames.append(df_query(conn, f"SELECT DISTINCT ym FROM sales WHERE order_no IN ({placeholders})", tuple(chunk)))
+    if not frames:
+        return pd.DataFrame(columns=["ym"])
+    return pd.concat(frames, ignore_index=True).drop_duplicates()
+
+
+def delete_sales_by_order_nos(conn: DBConn, order_nos: list[str]):
+    for chunk in iter_chunks(order_nos):
+        placeholders = ",".join(["?"] * len(chunk))
+        conn.execute(f"DELETE FROM sales WHERE order_no IN ({placeholders})", tuple(chunk))
 
 
 def tr_money(x: float) -> str:
@@ -1610,10 +1645,9 @@ elif section == "Veri Ekle":
                 )
                 order_nos = sorted({x for x in order_nos.tolist() if x})
                 if order_nos:
-                    placeholders = ",".join(["?"] * len(order_nos))
-                    existing = df_query(conn, f"SELECT DISTINCT ym FROM sales WHERE order_no IN ({placeholders})", tuple(order_nos))
+                    existing = select_months_for_order_nos(conn, order_nos)
                     affected_months.update([str(m).strip() for m in existing["ym"].dropna().astype(str).tolist() if is_valid_ym(str(m).strip())])
-                    conn.executemany("DELETE FROM sales WHERE order_no=?", [(x,) for x in order_nos])
+                    delete_sales_by_order_nos(conn, order_nos)
 
                 # Also replace old rows from same exact file hash.
                 source_months = df_query(conn, "SELECT DISTINCT ym FROM sales WHERE source_hash=?", (source_hash,))
